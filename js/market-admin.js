@@ -27,13 +27,18 @@
     admin: false,
     firebaseReady: false,
     storageMode: "localStorage",
-    activeTab: "dashboard",
+    activeTab: "rooms",
     // Phase 2: rooms/{roomCode} 연동
     roomCode: "",
     roomData: null,      // 마지막으로 읽은 원본 room (부분 update diff 기준)
     roomMode: false,     // true 면 저장 대상이 rooms/{code}, false 면 레거시 marketAdmin/*
-    roomLoaded: false
+    roomLoaded: false,
+    // 1.4.0 방 관리
+    allRooms: [],        // 전체 방 요약 캐시 (수동 새로고침)
+    dbAdmin: false       // /admins/{uid}=true 로 확인된 관리자
   };
+
+  let pendingDeleteCode = "";
 
   const $ = (selector, root = document) => root.querySelector(selector);
   const $$ = (selector, root = document) => Array.from(root.querySelectorAll(selector));
@@ -186,6 +191,34 @@
     const refreshJoin = $("#refreshJoinRequests");
     if (refreshJoin) refreshJoin.addEventListener("click", () => { void renderJoinRequests(); });
 
+    // 1.4.0 전체 방 관리
+    const refreshRoomsBtn = $("#refreshRooms");
+    if (refreshRoomsBtn) refreshRoomsBtn.addEventListener("click", () => { void renderRooms(); });
+    const roomsSearch = $("#roomsSearch");
+    if (roomsSearch) roomsSearch.addEventListener("input", renderRoomsList);
+    const roomsFilter = $("#roomsStatusFilter");
+    if (roomsFilter) roomsFilter.addEventListener("change", renderRoomsList);
+    // 방 삭제 모달
+    const delCancel = $("#deleteRoomCancel");
+    if (delCancel) delCancel.addEventListener("click", closeDeleteModal);
+    const delConfirm = $("#deleteRoomConfirm");
+    if (delConfirm) delConfirm.addEventListener("click", () => { void confirmDeleteRoom(); });
+    const delInput = $("#deleteRoomConfirmInput");
+    if (delInput) delInput.addEventListener("input", () => {
+      const v = (delInput.value || "").trim().toUpperCase();
+      const btn = $("#deleteRoomConfirm");
+      if (btn) btn.disabled = !(v && v === pendingDeleteCode);
+    });
+    const delOverlay = $("#deleteRoomModal");
+    if (delOverlay) delOverlay.addEventListener("click", (e) => { if (e.target === delOverlay) closeDeleteModal(); });
+    // 관리자 UID 칩 / 권한없음 게이트
+    const uidChip = $("#adminUidChip");
+    if (uidChip) uidChip.addEventListener("click", () => { void copyText(adminUid()); });
+    const denyCopy = $("#denyCopyUid");
+    if (denyCopy) denyCopy.addEventListener("click", () => { void copyText((state.user && state.user.uid) || ""); });
+    const denySignOut = $("#denySignOut");
+    if (denySignOut) denySignOut.addEventListener("click", () => { if (state.auth) state.auth.signOut(); });
+
     $("#authForm").addEventListener("submit", (event) => {
       event.preventDefault();
       void signIn();
@@ -206,6 +239,7 @@
     if (tab === "debug") renderDebug();
     if (tab === "disclosures") renderDisclosuresHint();
     if (tab === "joinRequests") void renderJoinRequests();
+    if (tab === "rooms") void renderRooms();
   }
 
   function showAuthGate(message) {
@@ -221,7 +255,80 @@
   function allowAdmin(label) {
     state.admin = true;
     hideAuthGate();
+    hideDenied();
     setAdminBadge("ok", label || "관리자");
+    updateAdminUidChip();
+    if (state.activeTab === "rooms") void renderRooms();
+  }
+
+  function hideDenied() {
+    const dg = $("#denyGate");
+    if (dg) dg.classList.add("hidden");
+  }
+
+  // 권한 게이팅: 개발모드 → 하드코딩 관리자 → /admins/{uid}=true 순. 모두 아니면 차단.
+  async function resolveAndGate(user) {
+    state.user = user || null;
+    if (isDevAdmin()) { allowAdmin("개발 관리자"); void loadActiveDataset(); return; }
+    if (isAdminUser(user)) { allowAdmin("Firebase 관리자"); void loadActiveDataset(); return; }
+    if (user && state.db) {
+      try {
+        const snap = await state.db.ref("admins/" + user.uid).once("value");
+        if (snap.val() === true) {
+          state.dbAdmin = true;
+          allowAdmin("관리자(admins)");
+          void loadActiveDataset();
+          return;
+        }
+      } catch (e) {}
+    }
+    state.admin = false;
+    state.dbAdmin = false;
+    if (user) showDenied(user.uid);            // 로그인했지만 관리자 아님
+    else showAuthGate("관리자 계정으로 로그인하세요."); // 미로그인
+  }
+
+  function showDenied(uid) {
+    hideAuthGate();
+    const dg = $("#denyGate");
+    if (dg) dg.classList.remove("hidden");
+    const u = $("#denyUid");
+    if (u) u.textContent = uid || "(없음)";
+    setAdminBadge("warn", "권한 없음");
+    updateAdminUidChip();
+    const SC = window.SiteConfig;
+    if (SC) {
+      const code = state.roomCode || (SC.getCurrentRoomCode ? SC.getCurrentRoomCode() : "");
+      const set = (id, url) => { const a = $("#" + id); if (a) a.href = url; };
+      set("denyNavBattle", SC.buildBattleUrl(code));
+      set("denyNavBoard", SC.buildBoardUrl(code));
+      set("denyNavWiki", SC.buildWikiUrl(code, ""));
+    }
+  }
+
+  function adminUid() {
+    return (state.user && state.user.uid) || (isDevAdmin() ? "devAdmin" : "");
+  }
+
+  function updateAdminUidChip() {
+    const chip = $("#adminUidChip");
+    if (!chip) return;
+    const uid = adminUid();
+    if (!uid) { chip.hidden = true; return; }
+    chip.hidden = false;
+    chip.textContent = "UID " + uid.slice(0, 8) + "…";
+    chip.title = "관리자 UID: " + uid + " (클릭하여 복사)";
+  }
+
+  async function copyText(text) {
+    if (!text) return;
+    try { await navigator.clipboard.writeText(text); toast("복사했습니다.", "ok"); }
+    catch (e) {
+      const ta = document.createElement("textarea");
+      ta.value = text; document.body.appendChild(ta); ta.select();
+      try { document.execCommand("copy"); toast("복사했습니다.", "ok"); } catch (e2) {}
+      ta.remove();
+    }
   }
 
   function isAdminUser(user) {
@@ -262,18 +369,7 @@
       setConnectionBadge("ok", "Firebase 연결됨");
       state.auth.onAuthStateChanged((user) => {
         state.user = user || null;
-        if (isAdminUser(user)) {
-          allowAdmin("Firebase 관리자");
-          void loadActiveDataset();
-          return;
-        }
-        if (isDevAdmin()) {
-          allowAdmin("개발 관리자");
-          void loadActiveDataset();
-          return;
-        }
-        state.admin = false;
-        showAuthGate("관리자 계정으로 로그인하세요.");
+        void resolveAndGate(user);
       });
     } catch (error) {
       state.db = null;
@@ -715,6 +811,159 @@
       renderDebug();
     } catch (e) {
       toast((kind === "approve" ? "승인" : "거절") + " 실패: " + (e && e.message), "error");
+    }
+  }
+
+  // ===== 1.4.0: 전체 방 관리 =====
+  async function renderRooms() {
+    const root = $("#roomsList");
+    const notice = $("#roomsNotice");
+    if (!root) return;
+    if (!state.admin) { setNoticeEl(notice, "관리자만 사용할 수 있습니다.", "warn"); root.innerHTML = ""; return; }
+    const RB = window.RoomBridge;
+    if (!RB || !RB.hasFirebase()) { setNoticeEl(notice, "Firebase 미연결 — 전체 방 목록은 Firebase가 필요합니다.", "warn"); root.innerHTML = ""; return; }
+    setNoticeEl(notice, "방 목록을 불러오는 중...", "");
+    let rooms;
+    try { rooms = await RB.loadAllRooms(); }
+    catch (e) { setNoticeEl(notice, "방 목록 로드 실패: " + (e && e.message), "error"); return; }
+    state.allRooms = rooms;
+    setNoticeEl(notice, "", "");
+    renderRoomsStats(rooms);
+    renderRoomsList();
+    renderDebug();
+  }
+
+  function renderRoomsStats(rooms) {
+    const el = $("#roomsStats");
+    if (!el) return;
+    const live = rooms.filter((r) => !r.deleted);
+    const playing = live.filter((r) => ["playing", "active", "running"].includes(r.status)).length;
+    const waiting = live.filter((r) => r.status === "waiting").length;
+    const ended = live.filter((r) => ["ended", "closed", "finished"].includes(r.status)).length;
+    const deleted = rooms.filter((r) => r.deleted).length;
+    const players = live.reduce((a, r) => a + r.players, 0);
+    const pending = live.reduce((a, r) => a + r.pending, 0);
+    el.innerHTML = [
+      statCard("전체 방", rooms.length),
+      statCard("진행 중", playing),
+      statCard("대기 중", waiting),
+      statCard("종료", ended),
+      statCard("삭제", deleted),
+      statCard("참여자", players),
+      statCard("승인대기", pending),
+    ].join("");
+  }
+
+  function renderRoomsList() {
+    const root = $("#roomsList");
+    if (!root) return;
+    const q = ($("#roomsSearch") && $("#roomsSearch").value || "").trim().toUpperCase();
+    const f = ($("#roomsStatusFilter") && $("#roomsStatusFilter").value) || "active";
+    let rows = (state.allRooms || []).slice().filter((r) => {
+      if (q && r.code.indexOf(q) < 0) return false;
+      if (f === "all") return true;
+      if (f === "deleted") return r.deleted;
+      if (r.deleted) return false; // 기본/기타 필터에서는 삭제된 방 숨김
+      if (f === "active") return ["waiting", "playing", "active", "running"].includes(r.status);
+      if (f === "playing") return ["playing", "active", "running"].includes(r.status);
+      if (f === "waiting") return r.status === "waiting";
+      if (f === "ended") return ["ended", "closed", "finished"].includes(r.status);
+      return true;
+    });
+    rows.sort((a, b) => (b.updatedAt || b.createdAt || 0) - (a.updatedAt || a.createdAt || 0));
+    const countBadge = $("#roomsCount");
+    if (countBadge) countBadge.textContent = "방 " + rows.length;
+    if (!rows.length) { root.innerHTML = `<div class="activity-item">표시할 방이 없습니다.</div>`; return; }
+    root.innerHTML = rows.map(roomRow).join("");
+    root.querySelectorAll("[data-room-select]").forEach((b) => b.addEventListener("click", () => { void selectRoom(b.dataset.roomSelect); }));
+    root.querySelectorAll("[data-room-delete]").forEach((b) => b.addEventListener("click", () => openDeleteModal(b.dataset.roomDelete)));
+    root.querySelectorAll("[data-room-restore]").forEach((b) => b.addEventListener("click", () => { void restoreRoomAction(b.dataset.roomRestore); }));
+  }
+
+  function roomRow(r) {
+    const SC = window.SiteConfig;
+    const sel = r.code === state.roomCode ? " selected" : "";
+    const statusType = r.deleted ? "muted" : ["playing", "active", "running"].includes(r.status) ? "ok" : r.status === "waiting" ? "warn" : "muted";
+    const battle = SC ? SC.buildBattleUrl(r.code) : "#";
+    const board = SC ? SC.buildBoardUrl(r.code) : "#";
+    const wiki = SC ? SC.buildWikiUrl(r.code, "") : "#";
+    const tail = r.deleted
+      ? `<button class="button small" type="button" data-room-restore="${escAttr(r.code)}">복구</button>`
+      : `<button class="button danger small" type="button" data-room-delete="${escAttr(r.code)}">삭제</button>`;
+    return `<article class="room-card${sel}">
+      <div class="room-card-head">
+        <button class="room-code-btn" type="button" data-room-select="${escAttr(r.code)}">${esc(r.code)}</button>
+        <span class="status-badge ${statusType}">${esc(r.deleted ? "삭제됨" : r.status)}</span>
+        ${r.pending ? `<span class="status-badge warn">승인대기 ${r.pending}</span>` : ""}
+        ${r.code === state.roomCode ? `<span class="status-badge ok">선택됨</span>` : ""}
+      </div>
+      <div class="room-card-meta">참여 ${r.players} · 종목 ${r.stocks} · 뉴스 ${r.news} · 공시 ${r.disclosures}</div>
+      <div class="room-card-meta muted">host ${esc((r.hostId || "-").slice(0, 8))} · 생성 ${esc(fmtTime(r.createdAt))} · 수정 ${esc(fmtTime(r.updatedAt))}</div>
+      <div class="room-card-actions">
+        <button class="button small" type="button" data-room-select="${escAttr(r.code)}">선택·로드</button>
+        <a class="button small" href="${escAttr(battle)}" target="_blank" rel="noopener">주식시장</a>
+        <a class="button small" href="${escAttr(board)}" target="_blank" rel="noopener">주식소식</a>
+        <a class="button small" href="${escAttr(wiki)}" target="_blank" rel="noopener">주식정보</a>
+        ${tail}
+      </div>
+    </article>`;
+  }
+
+  async function selectRoom(code) {
+    if (!code) return;
+    state.roomCode = code;
+    const input = $("#roomCodeInput");
+    if (input) input.value = code;
+    const SC = window.SiteConfig;
+    if (SC) SC.setLastRoomCode(code);
+    try { const u = new URL(location.href); u.searchParams.set("room", code); history.replaceState(null, "", u); } catch (e) {}
+    await loadRoomDataset();
+    renderRoomsList();
+    toast(`방 ${code} 선택 · 데이터 로드`, "ok");
+  }
+
+  async function restoreRoomAction(code) {
+    if (!state.admin || !code) return;
+    if (!window.confirm(`방 ${code} 을(를) 복구할까요? (삭제 표시 해제)`)) return;
+    const RB = window.RoomBridge;
+    try {
+      await RB.restoreRoom(code, adminUid());
+      toast(`방 ${code} 복구 완료.`, "ok");
+      await renderRooms();
+    } catch (e) { toast("복구 실패: " + (e && e.message), "error"); }
+  }
+
+  // ----- 방 삭제 모달 (roomCode 재입력 필수) -----
+  function openDeleteModal(code) {
+    if (!state.admin) { toast("관리자만 삭제할 수 있습니다.", "error"); return; }
+    pendingDeleteCode = code;
+    const codeEl = $("#deleteRoomCode"); if (codeEl) codeEl.textContent = code;
+    const input = $("#deleteRoomConfirmInput"); if (input) input.value = "";
+    const confirm = $("#deleteRoomConfirm"); if (confirm) confirm.disabled = true;
+    const msg = $("#deleteRoomMsg"); if (msg) msg.textContent = "";
+    const modal = $("#deleteRoomModal"); if (modal) modal.classList.remove("hidden");
+    setTimeout(() => { if (input) input.focus(); }, 50);
+  }
+
+  function closeDeleteModal() {
+    const modal = $("#deleteRoomModal"); if (modal) modal.classList.add("hidden");
+    pendingDeleteCode = "";
+  }
+
+  async function confirmDeleteRoom() {
+    if (!state.admin) { toast("관리자만 삭제할 수 있습니다.", "error"); return; }
+    const code = pendingDeleteCode;
+    const v = ($("#deleteRoomConfirmInput") && $("#deleteRoomConfirmInput").value || "").trim().toUpperCase();
+    const msg = $("#deleteRoomMsg");
+    if (!code || v !== code) { if (msg) msg.textContent = "방 코드가 일치하지 않습니다."; return; }
+    const RB = window.RoomBridge;
+    try {
+      await RB.softDeleteRoom(code, adminUid(), null);
+      toast(`방 ${code} 삭제 표시(soft delete) 완료. 백업 생성됨.`, "ok");
+      closeDeleteModal();
+      await renderRooms();
+    } catch (e) {
+      if (msg) msg.textContent = "삭제 실패: " + (e && e.message);
     }
   }
 

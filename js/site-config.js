@@ -15,10 +15,10 @@
 
   // ★★ 배포 후 실제 GitHub Pages 주소로 바꾸세요 ★★
   const SITE_URLS = {
-    battle: "https://tom981105-web.github.io/market-online/",
-    board:  "https://tom981105-web.github.io/Market-Board/",
-    wiki:   "https://tom981105-web.github.io/Market-Wiki/",
-    admin:  "https://tom981105-web.github.io/Market-Admin/",
+    battle: "https://tom981105-web.github.io/STONK-Battle/",
+    board:  "https://tom981105-web.github.io/STONK-Board/",
+    wiki:   "https://tom981105-web.github.io/STONK-Wiki/",
+    admin:  "https://tom981105-web.github.io/STONK-Admin/market-admin.html",
   };
 
   // 로컬 개발(파일 직접 열기 / localhost)에서 쓸 형제 폴더 상대경로 fallback

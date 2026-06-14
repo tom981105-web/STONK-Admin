@@ -33,6 +33,41 @@
     </form>
   </section>
 
+  <!-- 관리자 권한 없음 안내 게이트 (로그인했지만 /admins/{uid} 미등록) -->
+  <section id="denyGate" class="auth-gate hidden" aria-labelledby="denyTitle">
+    <div class="auth-card">
+      <span class="brand-mark">S</span>
+      <h1 id="denyTitle">관리자 권한이 없습니다</h1>
+      <p class="auth-message">이 페이지는 STONK 관리자 전용입니다.</p>
+      <p class="auth-message" style="font-size:12.5px">Firebase Realtime Database 데이터 탭에<br /><code>/admins/{uid} = true</code> 등록이 필요합니다.</p>
+      <div class="deny-uid">
+        <span class="muted">현재 UID</span>
+        <code id="denyUid">-</code>
+        <button id="denyCopyUid" class="button small" type="button">복사</button>
+      </div>
+      <div class="auth-actions deny-actions">
+        <a id="denyNavBattle" class="button" target="_blank" rel="noopener">주식시장</a>
+        <a id="denyNavBoard" class="button" target="_blank" rel="noopener">주식소식</a>
+        <a id="denyNavWiki" class="button" target="_blank" rel="noopener">주식정보</a>
+      </div>
+      <button id="denySignOut" class="button ghost" type="button">다른 계정으로 로그인</button>
+    </div>
+  </section>
+
+  <!-- 방 삭제 확인 모달 (roomCode 재입력 필수) -->
+  <div id="deleteRoomModal" class="modal-overlay hidden" role="dialog" aria-modal="true" aria-labelledby="deleteRoomTitle">
+    <div class="modal-card danger-card">
+      <h2 id="deleteRoomTitle">⚠ 방 삭제 확인</h2>
+      <p class="modal-msg">방 <b id="deleteRoomCode">-</b> 을(를) 삭제 표시(soft delete)합니다.<br />이 작업은 관리자만 할 수 있습니다. 확인을 위해 방 코드를 다시 입력하세요.</p>
+      <input id="deleteRoomConfirmInput" class="modal-input" type="text" maxlength="8" placeholder="방 코드 재입력" autocomplete="off" spellcheck="false" />
+      <p id="deleteRoomMsg" class="modal-err"></p>
+      <div class="modal-actions">
+        <button id="deleteRoomCancel" class="button ghost" type="button">취소</button>
+        <button id="deleteRoomConfirm" class="button danger" type="button" disabled>삭제(soft delete)</button>
+      </div>
+    </div>
+  </div>
+
   <header class="topbar">
     <div class="topbar-main">
       <a class="brand" href="market-admin.html" aria-label="STONK Admin 홈">
@@ -46,13 +81,15 @@
         <span id="connectionBadge" class="status-badge muted">연결 확인 중</span>
         <span id="adminBadge" class="status-badge muted">권한 확인 중</span>
         <span id="roomBadge" class="status-badge muted">방: -</span>
-        <a id="navBattle" class="status-badge link" target="_blank" rel="noopener">Battle</a>
-        <a id="navBoard" class="status-badge link" target="_blank" rel="noopener">Board</a>
-        <a id="navWiki" class="status-badge link" target="_blank" rel="noopener">Wiki</a>
+        <button id="adminUidChip" class="status-badge muted" type="button" title="관리자 UID 복사" hidden>UID -</button>
+        <a id="navBattle" class="status-badge link" target="_blank" rel="noopener">주식시장</a>
+        <a id="navBoard" class="status-badge link" target="_blank" rel="noopener">주식소식</a>
+        <a id="navWiki" class="status-badge link" target="_blank" rel="noopener">주식정보</a>
       </div>
     </div>
     <nav class="tabbar" aria-label="Market Admin 메뉴">
-      <button class="tab-button active" type="button" data-tab="dashboard">대시보드</button>
+      <button class="tab-button active" type="button" data-tab="rooms">전체 방 관리</button>
+      <button class="tab-button" type="button" data-tab="dashboard">대시보드</button>
       <button class="tab-button" type="button" data-tab="companies">회사 관리</button>
       <button class="tab-button" type="button" data-tab="news">뉴스 관리</button>
       <button class="tab-button" type="button" data-tab="disclosures">공시 관리</button>
@@ -80,7 +117,42 @@
   </section>
 
   <main class="admin-shell">
-    <section id="dashboard" class="tab-panel active" data-panel="dashboard">
+    <section id="rooms" class="tab-panel active" data-panel="rooms">
+      <div class="panel-head">
+        <div>
+          <p class="eyebrow">All Rooms</p>
+          <h1>전체 방 관리</h1>
+        </div>
+        <div class="head-actions">
+          <button id="refreshRooms" class="button ghost" type="button">새로고침</button>
+        </div>
+      </div>
+      <div id="roomsStats" class="stat-grid"></div>
+      <article class="card">
+        <div class="card-title">
+          <div>
+            <p class="eyebrow">Rooms</p>
+            <h2>방 목록</h2>
+          </div>
+          <span id="roomsCount" class="status-badge muted">방 0</span>
+        </div>
+        <div class="list-tools">
+          <input id="roomsSearch" type="search" placeholder="방 코드 검색" autocomplete="off" />
+          <select id="roomsStatusFilter">
+            <option value="active">진행/대기 (기본)</option>
+            <option value="all">전체</option>
+            <option value="playing">진행 중</option>
+            <option value="waiting">대기 중</option>
+            <option value="ended">종료됨</option>
+            <option value="deleted">삭제된 방</option>
+          </select>
+        </div>
+        <div id="roomsNotice" class="room-notice" hidden></div>
+        <div id="roomsList" class="rooms-list"></div>
+      </article>
+    </section>
+
+    <section id="dashboard" class="tab-panel" data-panel="dashboard">
       <div class="panel-head">
         <div>
           <p class="eyebrow">Admin Dashboard</p>

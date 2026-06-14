@@ -330,6 +330,81 @@
     stat.lastWriteAt = now;
   }
 
+  // ── 전체 방 목록 (admin 전용, 1회 읽기 + 수동 새로고침) ── (1.4.0 방 관리)
+  // 전체 roomData 를 화면에 렌더하지 않고 요약만 추출한다.
+  function summarizeRoom(code, r) {
+    r = r || {};
+    const meta = r.meta || {};
+    const jr = r.joinRequests || {};
+    const pending = Object.values(jr).filter((x) => x && x.status === "pending").length;
+    return {
+      code,
+      status: meta.deleted ? "deleted" : (r.status || meta.status || "unknown"),
+      rawStatus: r.status || "",
+      deleted: !!meta.deleted,
+      hostId: r.hostId || "",
+      createdAt: r.createdAt || meta.createdAt || null,
+      updatedAt: meta.updatedAt || null,
+      deletedAt: meta.deletedAt || null,
+      players: r.players ? Object.keys(r.players).length : 0,
+      stocks: r.stocks ? Object.keys(r.stocks).length : 0,
+      news: r.news ? Object.keys(r.news).length : 0,
+      disclosures: r.disclosures ? Object.keys(r.disclosures).length : 0,
+      pending,
+    };
+  }
+
+  async function loadAllRooms() {
+    const database = db();
+    if (!database) throw new Error("Firebase 미연결");
+    const snap = await database.ref("rooms").once("value");
+    stat.lastReadAt = Date.now();
+    const val = snap.exists() ? snap.val() : {};
+    return Object.entries(val).map(([code, r]) => summarizeRoom(code, r));
+  }
+
+  // ── 방 soft delete (관리자 전용) ── meta 플래그만 부분 update, 삭제 전 백업 ──
+  async function softDeleteRoom(code, adminId, roomSnapshot) {
+    const database = db();
+    if (!database) throw new Error("Firebase 미연결");
+    if (!code) throw new Error("roomCode 없음");
+    // 삭제 전 백업 (전달받은 스냅샷 없으면 1회 읽기)
+    let snapData = roomSnapshot || null;
+    if (!snapData) {
+      try { const s = await database.ref("rooms/" + code).once("value"); snapData = s.val(); } catch (e) {}
+    }
+    backup(code, snapData, "soft delete (방 삭제 표시)", "Firebase");
+    const now = Date.now();
+    await database.ref().update({
+      [`rooms/${code}/meta/deleted`]: true,
+      [`rooms/${code}/meta/deletedAt`]: now,
+      [`rooms/${code}/meta/deletedBy`]: adminId || "admin",
+      [`rooms/${code}/meta/status`]: "deleted",
+      [`rooms/${code}/meta/updatedAt`]: now,
+    });
+    stat.lastWriteAt = now;
+    return { code, deletedAt: now };
+  }
+
+  // 방 복구 (soft delete 취소) — meta 플래그만 제거성 update
+  async function restoreRoom(code, adminId) {
+    const database = db();
+    if (!database) throw new Error("Firebase 미연결");
+    if (!code) throw new Error("roomCode 없음");
+    const now = Date.now();
+    await database.ref().update({
+      [`rooms/${code}/meta/deleted`]: false,
+      [`rooms/${code}/meta/deletedAt`]: null,
+      [`rooms/${code}/meta/deletedBy`]: null,
+      [`rooms/${code}/meta/status`]: null,
+      [`rooms/${code}/meta/restoredAt`]: now,
+      [`rooms/${code}/meta/restoredBy`]: adminId || "admin",
+      [`rooms/${code}/meta/updatedAt`]: now,
+    });
+    stat.lastWriteAt = now;
+    return { code, restoredAt: now };
+  }
+
   // ── 캐시 (선택적) ──
   function cache(code, room) {
     try { localStorage.setItem(STORAGE.cachePrefix + code, JSON.stringify({ at: Date.now(), room })); } catch (e) {}
@@ -352,6 +427,9 @@
     loadJoinRequests,
     approveJoinRequest,
     rejectJoinRequest,
+    loadAllRooms,
+    softDeleteRoom,
+    restoreRoom,
     backup,
     listBackups,
     getBackup,
