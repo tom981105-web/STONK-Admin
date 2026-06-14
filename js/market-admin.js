@@ -203,11 +203,14 @@
     if (delCancel) delCancel.addEventListener("click", closeDeleteModal);
     const delConfirm = $("#deleteRoomConfirm");
     if (delConfirm) delConfirm.addEventListener("click", () => { void confirmDeleteRoom(); });
+    const delHard = $("#deleteRoomHard");
+    if (delHard) delHard.addEventListener("click", () => { void confirmHardDeleteRoom(); });
     const delInput = $("#deleteRoomConfirmInput");
     if (delInput) delInput.addEventListener("input", () => {
       const v = (delInput.value || "").trim().toUpperCase();
-      const btn = $("#deleteRoomConfirm");
-      if (btn) btn.disabled = !(v && v === pendingDeleteCode);
+      const match = !!(v && v === pendingDeleteCode);
+      const sBtn = $("#deleteRoomConfirm"); if (sBtn) sBtn.disabled = !match;
+      const hBtn = $("#deleteRoomHard"); if (hBtn) hBtn.disabled = !match;
     });
     const delOverlay = $("#deleteRoomModal");
     if (delOverlay) delOverlay.addEventListener("click", (e) => { if (e.target === delOverlay) closeDeleteModal(); });
@@ -940,6 +943,7 @@
     const codeEl = $("#deleteRoomCode"); if (codeEl) codeEl.textContent = code;
     const input = $("#deleteRoomConfirmInput"); if (input) input.value = "";
     const confirm = $("#deleteRoomConfirm"); if (confirm) confirm.disabled = true;
+    const hard = $("#deleteRoomHard"); if (hard) hard.disabled = true;
     const msg = $("#deleteRoomMsg"); if (msg) msg.textContent = "";
     const modal = $("#deleteRoomModal"); if (modal) modal.classList.remove("hidden");
     setTimeout(() => { if (input) input.focus(); }, 50);
@@ -964,6 +968,24 @@
       await renderRooms();
     } catch (e) {
       if (msg) msg.textContent = "삭제 실패: " + (e && e.message);
+    }
+  }
+
+  async function confirmHardDeleteRoom() {
+    if (!state.admin) { toast("관리자만 삭제할 수 있습니다.", "error"); return; }
+    const code = pendingDeleteCode;
+    const v = ($("#deleteRoomConfirmInput") && $("#deleteRoomConfirmInput").value || "").trim().toUpperCase();
+    const msg = $("#deleteRoomMsg");
+    if (!code || v !== code) { if (msg) msg.textContent = "방 코드가 일치하지 않습니다."; return; }
+    if (!window.confirm(`방 ${code} 을(를) 완전 삭제합니다. 되돌릴 수 없습니다. 진행할까요?`)) return;
+    const RB = window.RoomBridge;
+    try {
+      const res = await RB.hardDeleteRoom(code, adminUid(), null);
+      toast(`방 ${code} 완전 삭제 완료. 백업: ${res && res.backupKey ? "생성됨" : "시도"}.`, "ok");
+      closeDeleteModal();
+      await renderRooms();
+    } catch (e) {
+      if (msg) msg.textContent = "완전 삭제 실패: " + (e && e.message);
     }
   }
 

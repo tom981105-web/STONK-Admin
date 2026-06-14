@@ -58,12 +58,13 @@
   <div id="deleteRoomModal" class="modal-overlay hidden" role="dialog" aria-modal="true" aria-labelledby="deleteRoomTitle">
     <div class="modal-card danger-card">
       <h2 id="deleteRoomTitle">⚠ 방 삭제 확인</h2>
-      <p class="modal-msg">방 <b id="deleteRoomCode">-</b> 을(를) 삭제 표시(soft delete)합니다.<br />이 작업은 관리자만 할 수 있습니다. 확인을 위해 방 코드를 다시 입력하세요.</p>
+      <p class="modal-msg">방 <b id="deleteRoomCode">-</b> 을(를) 삭제합니다. 이 작업은 관리자만 할 수 있습니다.<br />확인을 위해 방 코드를 다시 입력하세요.<br /><b>완전 삭제(hard)</b>는 즉시 되돌릴 수 없습니다(삭제 전 localStorage 백업 생성).</p>
       <input id="deleteRoomConfirmInput" class="modal-input" type="text" maxlength="8" placeholder="방 코드 재입력" autocomplete="off" spellcheck="false" />
       <p id="deleteRoomMsg" class="modal-err"></p>
       <div class="modal-actions">
         <button id="deleteRoomCancel" class="button ghost" type="button">취소</button>
-        <button id="deleteRoomConfirm" class="button danger" type="button" disabled>삭제(soft delete)</button>
+        <button id="deleteRoomConfirm" class="button" type="button" disabled>삭제 표시(soft)</button>
+        <button id="deleteRoomHard" class="button danger" type="button" disabled>완전 삭제(hard)</button>
       </div>
     </div>
   </div>

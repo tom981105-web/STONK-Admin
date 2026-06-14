@@ -49,6 +49,15 @@
 
   // ── room.stocks → admin company 배열 변환 ──
   // adminOverrides/companies/{id} 에 저장된 고유 필드가 있으면 덮어 적용한다.
+  // 특수 자산(업종이 없는 battle 종목)의 업종 fallback — "업종 누락" 검증 오류 방지
+  const TYPE_SECTOR = {
+    etf: "ETF", inverse: "ETF", leverage: "ETF", bond: "채권",
+    commodity: "원자재", reit: "리츠", spac: "SPAC", preferred: "우선주",
+  };
+  function sectorFallback(s) {
+    return (s && s.sector) || (s && TYPE_SECTOR[s.type]) || "기타";
+  }
+
   function roomToCompanies(room) {
     const stocks = (room && room.stocks) || {};
     const overrides = (room && room.adminOverrides && room.adminOverrides.companies) || {};
@@ -60,7 +69,7 @@
         id,
         name: ov.name != null ? ov.name : (s.name || id),
         ticker: ov.ticker != null ? ov.ticker : (s.ticker || ""),
-        sector: ov.sector != null ? ov.sector : (s.sector || ""),
+        sector: ov.sector != null && ov.sector !== "" ? ov.sector : sectorFallback(s),
         basePrice: num(ov.basePrice, base),
         currentPrice: num(ov.currentPrice, price),
         risk: ov.risk || "보통",
@@ -386,6 +395,22 @@
     return { code, deletedAt: now };
   }
 
+  // ── 방 hard delete (관리자 전용) ── 즉시 완전 삭제. 삭제 전 localStorage 백업 필수 ──
+  async function hardDeleteRoom(code, adminId, roomSnapshot) {
+    const database = db();
+    if (!database) throw new Error("Firebase 미연결");
+    if (!code) throw new Error("roomCode 없음");
+    let snapData = roomSnapshot || null;
+    if (!snapData) {
+      try { const s = await database.ref("rooms/" + code).once("value"); snapData = s.val(); } catch (e) {}
+    }
+    // 복구 불가 작업이므로 반드시 백업 후 진행
+    const key = backup(code, snapData, "hard delete (방 완전 삭제) by " + (adminId || "admin"), "Firebase");
+    await database.ref("rooms/" + code).remove(); // 해당 방만 삭제 — 다른 방 무영향
+    stat.lastWriteAt = Date.now();
+    return { code, backupKey: key };
+  }
+
   // 방 복구 (soft delete 취소) — meta 플래그만 제거성 update
   async function restoreRoom(code, adminId) {
     const database = db();
@@ -429,6 +454,7 @@
     rejectJoinRequest,
     loadAllRooms,
     softDeleteRoom,
+    hardDeleteRoom,
     restoreRoom,
     backup,
     listBackups,
