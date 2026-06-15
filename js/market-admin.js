@@ -540,6 +540,7 @@
       state.dataset.companies = RB.roomToCompanies(room).map((c) => D.normalizeItem("companies", c));
       state.dataset.news = RB.roomToNews(room).map((n) => D.normalizeItem("news", n));
       state.dataset.disclosures = RB.roomToDisclosures(room);
+      mergeRoomSectors(); // 방 업종을 업종 관리 목록에 자동 보강 → 검증 경고 정리
       resetCreateState();
       ensureSelections();
       saveLocalDataset();
@@ -924,33 +925,44 @@
     </article>`;
   }
 
+  // 보정 결과를 '전용 영구 영역'(#catchupResult)에 표시 — renderRooms 가 지우지 않는다.
+  function showCatchupResult(code, res) {
+    res = res || {};
+    const el = $("#catchupResult");
+    const n = (v) => (v == null || isNaN(Number(v)) ? 0 : Number(v));
+    const at = new Date().toLocaleTimeString("ko-KR", { hour12: false });
+    let level, text;
+    if (res.applied) {
+      level = "ok";
+      text = `✅ [${code}] 보정 완료 · 경과 ${n(res.elapsedMinutes)}분 · 변경 종목 ${n(res.changedStocks)}개 · 생성 캔들 ${n(res.generatedCandles)}개 · 갱신 ${at}`;
+    } else if (res.skipped) {
+      level = res.skippedReason === "locked" ? "error" : "warn";
+      text = `⚠ [${code}] ${res.message || "보정 생략"} · 변경 종목 ${n(res.changedStocks)}개 · 생성 캔들 ${n(res.generatedCandles)}개`;
+    } else {
+      level = "error";
+      text = `⛔ [${code}] 보정 실패 · ${res.message || res.reason || "알 수 없음"}`;
+    }
+    if (el) { el.hidden = false; el.className = "catchup-result " + level; el.textContent = text; }
+    toast(text, level);
+    return text;
+  }
+
   async function catchUpAction(code, btn) {
     if (!code) return;
-    const notice = $("#roomsNotice");
     const RB = window.RoomBridge;
-    if (!RB || !RB.runCatchUp) { setNoticeEl(notice, "보정 기능 미로드 (market-history.js 확인)", "error"); return; }
+    if (!RB || !RB.runCatchUp) { showCatchupResult(code, { message: "보정 기능 미로드 (market-history.js 확인)" }); return; }
     if (!confirm(`'${code}' 방의 시장 경과를 보정할까요?\n사람이 없던 시간을 압축 캔들로 반영하고 최종 가격을 갱신합니다.`)) return;
     if (btn) { btn.disabled = true; btn.textContent = "보정 중..."; }
-    setNoticeEl(notice, `'${code}' 시장 경과 보정 중...`, "");
     try {
       const res = await RB.runCatchUp(code, adminUid(), {});
-      console.debug("[admin] runCatchUp 결과", code, res); // 디버그: 결과 객체 확인용
-      const at = new Date().toLocaleTimeString("ko-KR", { hour12: false });
-      if (res && res.applied) {
-        // 실제 보정 수행됨 — 변경 종목/생성 캔들/갱신 시각 명시
-        setNoticeEl(notice, `'${code}' 보정 완료 · 경과 ${res.elapsedMinutes}분 · 변경 종목 ${res.changedStocks}개 · 생성 캔들 ${res.generatedCandles}개 · 갱신 ${at}`, "ok");
-      } else if (res && res.skipped) {
-        // 보정이 수행되지 않음(최신/락/종료방 등) — 실패와 구분
-        const lvl = res.skippedReason === "locked" ? "error" : "warn";
-        setNoticeEl(notice, `'${code}' ${res.message || "보정 생략"}`, lvl);
-      } else {
-        setNoticeEl(notice, `'${code}' 보정 실패 · ${(res && (res.message || res.reason)) || "알 수 없음"}`, "error");
-      }
-      await renderRooms();
+      console.debug("[admin] runCatchUp 결과", code, res); // 디버그: 결과 객체 전체 출력
+      await renderRooms();          // 목록 갱신 먼저(roomsNotice 는 비워짐)
+      showCatchupResult(code, res); // 그 다음 영구 영역에 결과 표시 — 사라지지 않음
     } catch (e) {
       console.debug("[admin] runCatchUp 예외", code, e);
-      const msg = e && /permission|denied/i.test(e.message || "") ? "권한 없음 (관리자 /admins 등록 또는 방장만 가능)" : (e && e.message);
-      setNoticeEl(notice, `'${code}' 보정 실패 · ${msg}`, "error");
+      const msg = e && /permission|denied/i.test(e.message || "") ? "권한 없음 (관리자 /admins 등록 또는 방장만 가능)" : (e && e.message) || "알 수 없는 오류";
+      await renderRooms();
+      showCatchupResult(code, { applied: false, success: false, skipped: false, message: msg });
       if (btn) { btn.disabled = false; btn.textContent = "시장 경과 보정 실행"; }
     }
   }
@@ -1637,6 +1649,35 @@
     toast(state.validation.errors ? "검증 오류가 있습니다." : "데이터 검증을 완료했습니다.", state.validation.errors ? "error" : "ok");
   }
 
+  // 기본 업종 목록 — 방 종목이 자주 쓰는 업종(검증에서 정상 인식)
+  const DEFAULT_SECTORS = [
+    "반도체", "IT", "바이오", "자동차", "금융", "게임", "엔터", "유통", "에너지", "조선",
+    "화학", "통신", "건설", "식품", "항공", "리츠", "ETF", "채권", "원자재", "SPAC",
+    "우선주", "기타", "AI·전자", "2차전지", "인터넷·게임", "제약", "신규상장", "바이오·제약",
+  ];
+
+  // 방 종목의 업종을 '업종 관리' 목록에 자동 보강(중복/빈값 제외). 비파괴적: 자동분만 _auto 표시.
+  function mergeRoomSectors() {
+    if (!Array.isArray(state.dataset.sectors)) return 0;
+    const existing = new Set(state.dataset.sectors.map((s) => s.name));
+    const names = new Set();
+    (state.dataset.companies || []).forEach((c) => {
+      const s = (c.sector || "").trim();
+      if (s) names.add(s);
+    });
+    let added = 0;
+    names.forEach((name) => {
+      if (existing.has(name)) return;
+      const id = "sector-auto-" + name.replace(/[^\w가-힣]+/g, "-");
+      state.dataset.sectors.push(D.normalizeItem("sectors", {
+        id, name, description: "방 종목에서 자동 인식된 업종입니다.", _auto: true,
+      }));
+      existing.add(name);
+      added++;
+    });
+    return added;
+  }
+
   function validateDataset() {
     const issues = [];
     D.COLLECTIONS.forEach((collection) => {
@@ -1651,7 +1692,13 @@
     });
 
     const companyIds = new Set(state.dataset.companies.map((item) => item.id));
-    const sectorNames = new Set(state.dataset.sectors.map((item) => item.name));
+    // 업종 인식 대상: 업종 관리 목록 + 기본 업종 + 방 종목에 실제 존재하는 업종(자동 인식)
+    //  → 방에서 만들어진 반도체/바이오 등이 '없는 업종' 경고로 도배되지 않게 한다.
+    const sectorNames = new Set([
+      ...state.dataset.sectors.map((item) => item.name),
+      ...DEFAULT_SECTORS,
+      ...state.dataset.companies.map((c) => (c.sector || "").trim()).filter(Boolean),
+    ]);
     const newsIds = new Set(state.dataset.news.map((item) => item.id));
     const wikiIds = new Set(state.dataset.wikiDocs.map((item) => item.id));
 

@@ -850,6 +850,23 @@ textarea:focus {
   background: rgba(248, 113, 113, 0.12);
 }
 
+/* 시장 경과 보정 결과 — 영구 표시(목록 재렌더에도 유지) */
+.catchup-result {
+  margin: 10px 0 0;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--surface-soft);
+  color: var(--ink);
+  padding: 11px 13px;
+  font-size: 13px;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+.catchup-result[hidden] { display: none; }
+.catchup-result.ok { border-color: rgba(34, 197, 94, 0.5); background: rgba(34, 197, 94, 0.12); }
+.catchup-result.warn { border-color: rgba(217, 119, 6, 0.5); background: rgba(217, 119, 6, 0.12); }
+.catchup-result.error { border-color: rgba(248, 113, 113, 0.5); background: rgba(248, 113, 113, 0.12); }
+
 .rooms-list {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
