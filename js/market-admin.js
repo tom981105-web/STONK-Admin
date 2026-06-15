@@ -934,15 +934,23 @@
     setNoticeEl(notice, `'${code}' 시장 경과 보정 중...`, "");
     try {
       const res = await RB.runCatchUp(code, adminUid(), {});
+      console.debug("[admin] runCatchUp 결과", code, res); // 디버그: 결과 객체 확인용
+      const at = new Date().toLocaleTimeString("ko-KR", { hour12: false });
       if (res && res.applied) {
-        const at = new Date().toLocaleTimeString("ko-KR", { hour12: false });
-        setNoticeEl(notice, `'${code}' 보정 완료 · 경과 ${Math.round(res.elapsed / 60000)}분 · 변경 종목 ${res.stocks} · 생성 캔들 ${res.candlesWritten} · 갱신 ${at}`, "ok");
+        // 실제 보정 수행됨 — 변경 종목/생성 캔들/갱신 시각 명시
+        setNoticeEl(notice, `'${code}' 보정 완료 · 경과 ${res.elapsedMinutes}분 · 변경 종목 ${res.changedStocks}개 · 생성 캔들 ${res.generatedCandles}개 · 갱신 ${at}`, "ok");
+      } else if (res && res.skipped) {
+        // 보정이 수행되지 않음(최신/락/종료방 등) — 실패와 구분
+        const lvl = res.skippedReason === "locked" ? "error" : "warn";
+        setNoticeEl(notice, `'${code}' ${res.message || "보정 생략"}`, lvl);
       } else {
-        setNoticeEl(notice, `'${code}' 보정 불필요/중복: ${(res && res.reason) || "-"}`, "warn");
+        setNoticeEl(notice, `'${code}' 보정 실패 · ${(res && (res.message || res.reason)) || "알 수 없음"}`, "error");
       }
       await renderRooms();
     } catch (e) {
-      setNoticeEl(notice, "보정 실패: " + (e && e.message), "error");
+      console.debug("[admin] runCatchUp 예외", code, e);
+      const msg = e && /permission|denied/i.test(e.message || "") ? "권한 없음 (관리자 /admins 등록 또는 방장만 가능)" : (e && e.message);
+      setNoticeEl(notice, `'${code}' 보정 실패 · ${msg}`, "error");
       if (btn) { btn.disabled = false; btn.textContent = "시장 경과 보정 실행"; }
     }
   }

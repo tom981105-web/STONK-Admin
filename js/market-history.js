@@ -103,7 +103,11 @@
         hi = Math.max(hi, cur); lo = Math.min(lo, cur);
       }
       var close = roundToTick(cur);
-      candles.push({ t: t0, o: roundToTick(open), h: roundToTick(hi), l: roundToTick(lo), c: close, v: Math.round((300 + Math.random() * 2200) * activ * (1 + heat * 0.8) * clamp(ticksPerCandle / 15, 0.5, 40)) });
+      // 거래량: tick당 봇 거래량 × ticksPerCandle × (변동폭 비례) — 라이브 1분봉 수준으로 스케일
+      var chg = open ? Math.abs((close - open) / open) : 0;
+      var perTickVol = (400 + Math.random() * 1800) * activ * (1 + heat * 0.8);
+      var vol = Math.round(perTickVol * ticksPerCandle * (1 + chg * 8));
+      candles.push({ t: t0, o: roundToTick(open), h: roundToTick(hi), l: roundToTick(lo), c: close, v: vol });
       price = close;
     }
     return { candles: candles, finalPrice: price, finalBase: base };
@@ -125,21 +129,30 @@
   }
 
   // 관리자 수동 보정: compat db, rooms/{code} 부분 update. lock 으로 중복 방지.
+  // 반환 표준 payload: { applied, success, skipped, skippedReason, reason, message,
+  //                      elapsedMinutes, changedStocks, generatedCandles, updatedAt }
+  function skipResult(reason, message, elapsed) {
+    return {
+      applied: false, success: false, skipped: true, skippedReason: reason, reason: reason,
+      message: message, elapsedMinutes: elapsed != null ? Math.round(elapsed / 60000) : null,
+      changedStocks: 0, generatedCandles: 0, updatedAt: null,
+    };
+  }
   function runCatchUp(db, roomCode, roomData, uid, opts) {
     opts = opts || {};
-    if (!roomData || !roomData.stocks) return Promise.resolve({ applied: false, reason: "no-stocks" });
-    if (roomData.status !== "playing") return Promise.resolve({ applied: false, reason: "not-playing" });
+    if (!roomData || !roomData.stocks) return Promise.resolve(skipResult("no-stocks", "보정 생략 · 종목 데이터 없음"));
+    if (roomData.status !== "playing") return Promise.resolve(skipResult("not-playing", "보정 생략 · 진행 중인 방이 아님"));
     var now = Date.now();
     var lastTick = (roomData.market && roomData.market.lastTickAt) || roomData.marketTick || 0;
     var elapsed = now - lastTick;
-    if (!opts.force && elapsed < MIN_CATCHUP_MS) return Promise.resolve({ applied: false, reason: "fresh", elapsed: elapsed });
+    if (!opts.force && elapsed < MIN_CATCHUP_MS) return Promise.resolve(skipResult("fresh", "이미 최신 상태입니다 · 경과 " + Math.round(elapsed / 60000) + "분", elapsed));
 
     var lockRef = db.ref("rooms/" + roomCode + "/market/catchupLock");
     return lockRef.transaction(function (cur) {
       if (cur && cur.expiresAt && cur.expiresAt > now) return; // 유효 락 → 중단
       return { by: uid || "admin", at: now, expiresAt: now + LOCK_TTL_MS };
     }).then(function (res) {
-      if (!res.committed && !opts.force) return { applied: false, reason: "locked" };
+      if (!res.committed && !opts.force) return skipResult("locked", "보정 실패 · lock 획득 실패(다른 보정 진행 중)", elapsed);
       var stocks = roomData.stocks;
       var ids = Object.keys(stocks);
       var perStock = clamp(Math.round(WRITE_BUDGET / ids.length), 30, 480);
@@ -195,7 +208,14 @@
       updates["market/catchupLock"] = null;
       updates["marketTick"] = now;
       return db.ref("rooms/" + roomCode).update(updates).then(function () {
-        return { applied: true, elapsed: elapsed, numSteps: numSteps, candlesWritten: candlesWritten, stocks: ids.length };
+        var em = Math.round(elapsed / 60000);
+        return {
+          applied: true, success: true, skipped: false, reason: "applied",
+          elapsed: elapsed, elapsedMinutes: em, numSteps: numSteps,
+          changedStocks: ids.length, generatedCandles: candlesWritten,
+          stocks: ids.length, candlesWritten: candlesWritten, updatedAt: now,
+          message: "보정 완료 · 경과 " + em + "분 · 변경 종목 " + ids.length + "개 · 생성 캔들 " + candlesWritten + "개",
+        };
       });
     });
   }
@@ -332,25 +352,64 @@
     tip.style.top = "8px";
   }
 
-  // 기간 → tier 매핑 + 보유개수 (STONK 게임 구조: 1틱/1일/3일/1주/1달/전체)
-  //  1틱: 초단기(최근 캔들 주변) / 1일: 1m·5m / 3일: 5m·15m / 1주: 15m·1h / 1달: 1h·15m / 전체: 가장 넓게
-  var PERIOD_MAP = {
+  // 기간 → 시간창(실제 t 필터) + tier 후보(이상적 입도 우선, 데이터 짧으면 더 촘촘한 tier로 fallback)
+  // 핵심: 실제 timestamp 로 필터링한다. 없는 기간을 가짜로 늘리지 않는다.
+  var PERIOD_WINDOW = {
+    "tick": 30 * 60000, "1d": 86400000, "3d": 259200000,
+    "1w": 604800000, "1m": 2592000000, "all": Infinity,
+  };
+  var PERIOD_TIERS = {
     "tick": ["candles1m", "candles5m"],
-    "1d": ["candles1m", "candles5m"],
-    "3d": ["candles5m", "candles15m"],
-    "1w": ["candles15m", "candles1h"],
-    "1m": ["candles1h", "candles15m"],
+    "1d": ["candles5m", "candles1m"],
+    "3d": ["candles1h", "candles15m", "candles5m"],
+    "1w": ["candles1h", "candles15m"],
+    "1m": ["candles1h", "candles15m", "candles5m", "candles1m"],
     "all": ["candles1h", "candles15m", "candles5m", "candles1m"],
   };
-  var PERIOD_COUNT = { "tick": 10, "1d": 240, "3d": 216, "1w": 224, "1m": 360, "all": 500 };
+  var PERIOD_COUNT = { "tick": 16, "1d": 288, "3d": 216, "1w": 224, "1m": 360, "all": 500 };
+
   function seriesFor(history, period, count) {
-    var tiers = PERIOD_MAP[period] || PERIOD_MAP["1d"];
+    var win = (PERIOD_WINDOW[period] != null) ? PERIOD_WINDOW[period] : Infinity;
+    var cutoff = (win === Infinity) ? -Infinity : Date.now() - win;
+    var tiers = PERIOD_TIERS[period] || PERIOD_TIERS["1d"];
     var s = [];
-    for (var i = 0; i < tiers.length; i++) { s = readSeries(history, tiers[i]); if (s.length) break; }
-    if (!s.length) { var b = bestSeries(history); s = b.candles; }
-    count = count || PERIOD_COUNT[period] || 240;
+    for (var i = 0; i < tiers.length; i++) {
+      var arr = readSeries(history, tiers[i]);
+      if (!arr.length) continue;
+      arr = arr.filter(function (c) { return c.t >= cutoff; }); // 실제 t 기준 기간 필터
+      if (arr.length >= 2) { s = arr; break; }
+      if (!s.length && arr.length) s = arr; // 최소 1개라도 확보(더 촘촘한 tier 계속 시도)
+    }
+    if (!s.length) {
+      var b = bestSeries(history);
+      s = b.candles.filter(function (c) { return c.t >= cutoff; });
+    }
+    count = count || PERIOD_COUNT[period] || 300;
     if (s.length > count) s = s.slice(s.length - count);
     return s;
+  }
+
+  // 누적 데이터 범위 사람이 읽는 문구
+  function spanText(ms) {
+    if (ms <= 0) return "0분";
+    var m = Math.round(ms / 60000);
+    if (m < 60) return m + "분";
+    var h = Math.floor(m / 60), mm = m % 60;
+    if (h < 24) return mm ? (h + "시간 " + mm + "분") : (h + "시간");
+    var d = Math.floor(h / 24), hh = h % 24;
+    return hh ? (d + "일 " + hh + "시간") : (d + "일");
+  }
+  var PERIOD_LABEL = { "tick": "1틱", "1d": "1일", "3d": "3일", "1w": "1주", "1m": "1달", "all": "전체" };
+  function rangeNote(period, candles) {
+    var lab = PERIOD_LABEL[period] || period;
+    if (!candles || !candles.length) return lab + " · 데이터 없음";
+    var first = candles[0].t, last = candles[candles.length - 1].t;
+    if (period === "tick") return "1틱 · 최근 흐름";
+    if (!(first > 1e11) || !(last > 1e11)) return lab + " · 최근 흐름";
+    var span = last - first;
+    var win = PERIOD_WINDOW[period];
+    if (win && win !== Infinity && span < win * 0.9) return lab + " · 아직 " + spanText(span) + " 데이터만 있음";
+    return lab + " · 누적 " + spanText(span) + " 데이터";
   }
 
   // ── 기간별 시간 표시 (브라우저 local time 기준 안정 처리) ──
@@ -383,5 +442,8 @@
     fmtNum: fmtNum,
     fmtTime: fmtTime,
     fmtFull: fmtFull,
+    spanText: spanText,
+    rangeNote: rangeNote,
+    PERIOD_WINDOW: PERIOD_WINDOW,
   };
 })();
