@@ -935,7 +935,8 @@
     try {
       const res = await RB.runCatchUp(code, adminUid(), {});
       if (res && res.applied) {
-        setNoticeEl(notice, `'${code}' 보정 완료: ${Math.round(res.elapsed / 60000)}분 경과, 캔들 ${res.candlesWritten}개, 종목 ${res.stocks}`, "ok");
+        const at = new Date().toLocaleTimeString("ko-KR", { hour12: false });
+        setNoticeEl(notice, `'${code}' 보정 완료 · 경과 ${Math.round(res.elapsed / 60000)}분 · 변경 종목 ${res.stocks} · 생성 캔들 ${res.candlesWritten} · 갱신 ${at}`, "ok");
       } else {
         setNoticeEl(notice, `'${code}' 보정 불필요/중복: ${(res && res.reason) || "-"}`, "warn");
       }

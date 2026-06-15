@@ -67,35 +67,44 @@
   }
 
   // ===== 오프라인 시뮬레이션(관리자 보정용) =====
+  // 실제 4초 tick 이 계속 돈 것처럼 변동을 누적(분산은 실제 tick 수에 비례). 평균회귀 없음,
+  // 기준가 고정(±30% 밴드), 추세/과열/뉴스 충격 반영. battle src/history.js 와 동일 로직.
   function simulateStock(stock, fromT, toT, numSteps) {
     var stepMs = (toT - fromT) / numSteps;
-    var minsPer = Math.max(0.2, stepMs / 60000);
+    var ticksPerCandle = Math.max(1, stepMs / 4000);
     var volat = stock.volat || 1, activ = stock.activ || 1;
-    var base = stock.basePrice || stock.price || MIN_PRICE;
+    var base = stock.basePrice || stock.price || MIN_PRICE; // 고정
     var price = stock.price || base;
     var trend = stock.trend || 0;
-    var sigmaMin = 0.0045 * volat;
+    var heat = stock.heat || 0;
     var isEquity = !stock.type || stock.type === "stock";
+    var perTick = 0.00115 * volat * (isEquity ? 1 : 0.7); // 실시간 1틱 own 표준편차 근사
+    var sub = 5;
     var candles = [];
     for (var i = 0; i < numSteps; i++) {
       var t0 = fromT + stepMs * i;
       var open = price;
-      trend = clamp(trend * 0.96 + randn() * 0.0006 * volat, -0.004, 0.004);
-      var revert = clamp((base - price) / base, -0.2, 0.2) * 0.03;
-      var hi = open, lo = open, cur = open, sub = 4;
+      var tps = ticksPerCandle / sub;
+      var hi = open, lo = open, cur = open;
       for (var k = 0; k < sub; k++) {
-        var ret = (trend + revert) * (minsPer / sub) +
-          randn() * sigmaMin * Math.sqrt(minsPer / sub) +
-          (Math.random() < 0.01 ? randn() * 0.01 * (isEquity ? 1 : 0.6) : 0);
+        // 추세(모멘텀): 완만한 OU 워크 — 방향성은 주되 한 방향 폭주는 막음
+        trend = clamp(trend * Math.pow(0.99, tps) + randn() * 0.00028 * volat * Math.sqrt(tps), -0.0022, 0.0022);
+        // 과열(테마) 가끔 발동 → 변동/거래 일시 확대
+        if (Math.random() < 0.006 * tps) heat = clamp(heat + (0.3 + Math.random() * 0.7), 0, 1.8);
+        heat *= Math.pow(0.94, tps);
+        var effStd = perTick * (1 + heat * 0.6);
+        // 변동 = 추세*틱수 + 랜덤워크(분산은 틱수 비례 → 경과시간만큼 누적·증가)
+        var ret = trend * tps + randn() * effStd * Math.sqrt(tps);
+        // 뉴스 한 방 충격(드물게)
+        if (Math.random() < 0.004 * tps) ret += (Math.random() < 0.5 ? 1 : -1) * (0.008 + Math.random() * 0.028) * (isEquity ? 1 : 0.6);
         cur = cur * (1 + ret);
-        cur = clamp(cur, lowerLimit(base), upperLimit(base));
+        cur = clamp(cur, lowerLimit(base), upperLimit(base)); // ±30% 하드 밴드(실시간과 동일)
         cur = Math.max(MIN_PRICE, cur);
         hi = Math.max(hi, cur); lo = Math.min(lo, cur);
       }
       var close = roundToTick(cur);
-      candles.push({ t: t0, o: roundToTick(open), h: roundToTick(hi), l: roundToTick(lo), c: close, v: Math.round((300 + Math.random() * 2200) * activ * minsPer) });
+      candles.push({ t: t0, o: roundToTick(open), h: roundToTick(hi), l: roundToTick(lo), c: close, v: Math.round((300 + Math.random() * 2200) * activ * (1 + heat * 0.8) * clamp(ticksPerCandle / 15, 0.5, 40)) });
       price = close;
-      if (Math.random() < 0.02 * minsPer) base = Math.round(base * 0.7 + price * 0.3);
     }
     return { candles: candles, finalPrice: price, finalBase: base };
   }
@@ -169,7 +178,6 @@
         updates[P + "previousPrice"] = s.price;
         updates[P + "price"] = finalPrice;
         updates[P + "currentPrice"] = finalPrice;
-        updates[P + "basePrice"] = base;
         updates[P + "changeRate"] = +(((finalPrice - base) / base) * 100).toFixed(2);
         updates[P + "volume"] = (s.volume || 0) + volSum;
         updates[P + "value"] = (s.value || 0) + volSum * finalPrice;
@@ -249,7 +257,22 @@
       ctx.strokeStyle = col; ctx.lineWidth = 1; ctx.setLineDash([4, 3]);
       ctx.beginPath(); ctx.moveTo(0, Math.round(ly0) + 0.5); ctx.lineTo(plotW, Math.round(ly0) + 0.5); ctx.stroke(); ctx.setLineDash([]);
     }
-    return { cw: cw, plotW: plotW, candles: candles, cssW: cssW, cssH: cssH };
+    // x축 시간 라벨(기간 지정 시) — 처음/중간/끝 3개, 실제 t 값 기준
+    if (opts.period && candles.length >= 2) {
+      ctx.font = "10px sans-serif"; ctx.fillStyle = axisText;
+      var marks = [0, Math.floor((candles.length - 1) / 2), candles.length - 1];
+      var seen = {};
+      marks.forEach(function (mi) {
+        if (seen[mi]) return; seen[mi] = 1;
+        var label = fmtTime(candles[mi].t, opts.period);
+        if (!label) return;
+        var mx = mi * cw + cw / 2;
+        ctx.textAlign = mi === 0 ? "left" : mi === candles.length - 1 ? "right" : "center";
+        var tx = mi === 0 ? 2 : mi === candles.length - 1 ? plotW - 2 : mx;
+        ctx.fillText(label, tx, cssH - 2);
+      });
+    }
+    return { cw: cw, plotW: plotW, candles: candles, cssW: cssW, cssH: cssH, period: opts.period };
   }
 
   // 캔버스 + 기간버튼 + 호버 상세를 묶은 인터랙티브 차트 마운트(읽기 전용)
@@ -293,7 +316,7 @@
     var c = geom.candles[idx]; if (!c) return;
     var rate = c.o ? ((c.c - c.o) / c.o) * 100 : 0;
     var cls = rate > 0 ? "up" : rate < 0 ? "down" : "flat";
-    var when = c.t > 1e11 ? new Date(c.t).toLocaleString("ko-KR", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" }) : "구간 " + (idx + 1);
+    var when = fmtFull(c.t) || ("구간 " + (idx + 1));
     tip.innerHTML = '<div class="tip-when">' + when + '</div>' +
       '<div class="tip-row"><span>시작</span><b>' + fmtNum(c.o) + '</b></div>' +
       '<div class="tip-row"><span>마지막</span><b>' + fmtNum(c.c) + '</b></div>' +
@@ -309,19 +332,42 @@
     tip.style.top = "8px";
   }
 
-  // 기간 → tier 매핑 + 시리즈 빌더 (history 객체 입력)
+  // 기간 → tier 매핑 + 보유개수 (STONK 게임 구조: 1틱/1일/3일/1주/1달/전체)
+  //  1틱: 초단기(최근 캔들 주변) / 1일: 1m·5m / 3일: 5m·15m / 1주: 15m·1h / 1달: 1h·15m / 전체: 가장 넓게
   var PERIOD_MAP = {
-    "1d": ["candles1m"], "1w": ["candles5m", "candles1m"], "3m": ["candles15m", "candles5m"],
-    "1y": ["candles1h", "candles15m"], "5y": ["candles1h"], "all": ["candles1h", "candles15m", "candles5m", "candles1m"],
+    "tick": ["candles1m", "candles5m"],
+    "1d": ["candles1m", "candles5m"],
+    "3d": ["candles5m", "candles15m"],
+    "1w": ["candles15m", "candles1h"],
+    "1m": ["candles1h", "candles15m"],
+    "all": ["candles1h", "candles15m", "candles5m", "candles1m"],
   };
+  var PERIOD_COUNT = { "tick": 10, "1d": 240, "3d": 216, "1w": 224, "1m": 360, "all": 500 };
   function seriesFor(history, period, count) {
     var tiers = PERIOD_MAP[period] || PERIOD_MAP["1d"];
     var s = [];
     for (var i = 0; i < tiers.length; i++) { s = readSeries(history, tiers[i]); if (s.length) break; }
     if (!s.length) { var b = bestSeries(history); s = b.candles; }
-    count = count || 240;
+    count = count || PERIOD_COUNT[period] || 240;
     if (s.length > count) s = s.slice(s.length - count);
     return s;
+  }
+
+  // ── 기간별 시간 표시 (브라우저 local time 기준 안정 처리) ──
+  function pad2(n) { return (n < 10 ? "0" : "") + n; }
+  function fmtTime(t, period) {
+    if (!(t > 1e11)) return ""; // 합성 인덱스(실 timestamp 아님)면 비움
+    var d = new Date(t);
+    var hm = pad2(d.getHours()) + ":" + pad2(d.getMinutes());
+    var md = (d.getMonth() + 1) + "/" + d.getDate();
+    if (period === "tick" || period === "1d") return hm;        // 시:분
+    if (period === "3d" || period === "1w") return md + " " + hm; // 월/일 시:분
+    return md;                                                   // 1m/all: 월/일
+  }
+  function fmtFull(t) { // 상세박스용 정확한 날짜/시간
+    if (!(t > 1e11)) return "";
+    var d = new Date(t);
+    return (d.getMonth() + 1) + "/" + pad2(d.getDate()) + " " + pad2(d.getHours()) + ":" + pad2(d.getMinutes());
   }
 
   window.MarketHistory = {
@@ -335,5 +381,7 @@
     renderChart: renderChart,
     mountInteractive: mountInteractive,
     fmtNum: fmtNum,
+    fmtTime: fmtTime,
+    fmtFull: fmtFull,
   };
 })();

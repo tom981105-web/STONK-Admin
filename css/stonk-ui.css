@@ -1,0 +1,113 @@
+/* stonk-ui.css — STONK 공용 디자인 시스템 레이어 (battle·board·wiki·admin 공통)
+ *
+ * 원칙: 각 사이트의 라이트(battle·board)/다크(wiki·admin) 정체성과 레이아웃은 그대로 두고,
+ *       브랜드 색·상승/하락 색·모서리 스케일·폰트·포커스/스크롤바/터치영역 등 "토큰과 인터랙션"만
+ *       4개 사이트에 동일하게 정렬한다. 반드시 각 사이트의 자체 CSS '뒤'에 로드되어 토큰을 덮어쓴다.
+ * 배경/표면/텍스트(테마) 변수는 건드리지 않는다.
+ */
+
+/* Pretendard — 폰트가 없던 페이지(admin, board 레거시)도 동일 폰트가 되도록 공용 로드 */
+@import url("https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/static/pretendard.min.css");
+
+/* ===== 1) 통일 토큰 (라이트/다크 공통값) ===== */
+:root {
+  /* STONK 시그니처 브랜드: 인디고 → 바이올렛 */
+  --brand: #5b6cff;
+  --brand2: #8b5cf6;
+  --brand-strong: #4a5ae0;
+  --brand-grad: linear-gradient(135deg, #5b6cff 0%, #8b5cf6 100%);
+  --grad: linear-gradient(135deg, #5b6cff 0%, #8b5cf6 100%);
+  --blue: #5b6cff; /* wiki 액센트 변수도 브랜드로 통일 */
+
+  /* 한국식: 상승=빨강 / 하락=파랑 (전 사이트 동일 셰이드) */
+  --up: #f23645;
+  --down: #2f6bff;
+  --up-soft: rgba(242, 54, 69, 0.12);
+  --down-soft: rgba(47, 107, 255, 0.12);
+
+  /* 모서리 스케일 통일 */
+  --radius: 14px;
+  --radius-sm: 9px;
+
+  /* 포커스 링 / 모션 토큰 */
+  --ring: 0 0 0 3px rgba(91, 108, 255, 0.45);
+  --ease: 180ms cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+/* ===== 2) 폰트 통일 (admin=Segoe UI 포함 전부 Pretendard) ===== */
+body {
+  font-family: "Pretendard", "Pretendard Variable", -apple-system, BlinkMacSystemFont,
+    "Segoe UI", "Apple SD Gothic Neo", "Malgun Gothic", "Noto Sans KR", system-ui, sans-serif !important;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+/* 숫자(가격/등락/거래량)는 표 정렬에 강한 tabular-nums */
+b, strong, .num,
+[class*="price"], [class*="Price"], [class*="rate"], [class*="Rate"], [class*="amount"] {
+  font-variant-numeric: tabular-nums;
+}
+
+/* ===== 3) 인터랙션 폴리시 (반투명이라 라이트/다크 모두 자연스러움) ===== */
+button, a, [role="button"], input, select, textarea,
+.btn, .button, .cp-btn, .seg button {
+  transition: background-color var(--ease), border-color var(--ease), color var(--ease),
+    box-shadow var(--ease), transform var(--ease), opacity var(--ease);
+}
+button:not(:disabled), a[href], [role="button"],
+.btn, .button, .cp-btn { cursor: pointer; }
+
+/* 접근성: 키보드 포커스에만 브랜드 링(마우스 클릭엔 안 뜸) */
+:focus-visible {
+  outline: none !important;
+  box-shadow: var(--ring) !important;
+  border-radius: 6px;
+}
+
+/* 텍스트 선택 = 브랜드 */
+::selection { background: rgba(91, 108, 255, 0.28); }
+
+/* 비활성 상태 일관 */
+button:disabled, .btn:disabled, .button:disabled, [disabled] {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* 누르는 미세 피드백 */
+button:active:not(:disabled), .btn:active, .button:active, .cp-btn:active {
+  transform: translateY(1px);
+}
+
+/* ===== 4) 스크롤바 통일 (반투명 — 양 테마 공용) ===== */
+* { scrollbar-width: thin; scrollbar-color: rgba(130, 140, 165, 0.5) transparent; }
+::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb {
+  background: rgba(130, 140, 165, 0.45);
+  border-radius: 8px;
+  border: 2px solid transparent;
+  background-clip: padding-box;
+}
+::-webkit-scrollbar-thumb:hover { background: rgba(130, 140, 165, 0.72); background-clip: padding-box; }
+
+/* ===== 5) 모바일 터치 타깃 (너무 작은 컨트롤 방지) ===== */
+@media (max-width: 640px) {
+  button, .btn, .button, .cp-btn, select,
+  input[type="button"], input[type="submit"], [role="button"] {
+    min-height: 40px;
+  }
+}
+
+/* ===== 6) 모션 민감 사용자 존중 ===== */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+/* ===== 7) 차트 기간 버튼 활성 강조 통일 (battle·wiki) ===== */
+.cp-btn.is-active, .seg button.is-active {
+  box-shadow: 0 2px 8px rgba(91, 108, 255, 0.32);
+}
