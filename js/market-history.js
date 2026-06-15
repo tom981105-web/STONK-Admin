@@ -1,0 +1,339 @@
+// js/market-history.js — STONK 압축 캔들 히스토리 공용 유틸 (board/wiki/admin 공유, compat SDK)
+// window.MarketHistory 로 노출.
+//  - readSeries/bestSeries: rooms/{code}/stocks/{id}/history 의 캔들 읽기
+//  - renderChart: 캔들 + 거래량 + 기간 + 호버 상세를 그리는 경량 차트(읽기 전용)
+//  - needsCatchup: roomData 가 오래되었는지 판정(읽기)
+//  - runCatchUp: (관리자 전용) compat db 로 부분 update 보정. board/wiki 는 호출하지 않음.
+(function () {
+  "use strict";
+
+  var TIERS = [
+    { key: "candles1m", win: 60000, cap: 240 },
+    { key: "candles5m", win: 300000, cap: 288 },
+    { key: "candles15m", win: 900000, cap: 192 },
+    { key: "candles1h", win: 3600000, cap: 168 },
+  ];
+  var MIN_CATCHUP_MS = 2 * 60000;
+  var LOCK_TTL_MS = 60000;
+  var WRITE_BUDGET = 4500;
+  var MIN_PRICE = 10;
+
+  function bucketStart(t, win) { return Math.floor(t / win) * win; }
+  function clamp(v, a, b) { return Math.max(a, Math.min(b, v)); }
+  function tickSize(p) {
+    if (p < 2000) return 1; if (p < 5000) return 5; if (p < 20000) return 10;
+    if (p < 50000) return 50; if (p < 200000) return 100; return 500;
+  }
+  function roundToTick(p) { var t = tickSize(p); return Math.round(p / t) * t; }
+  function lowerLimit(base) { return Math.max(MIN_PRICE, Math.round(base * 0.7)); }
+  function upperLimit(base) { return Math.round(base * 1.3); }
+  function randn() {
+    var u = 0, v = 0;
+    while (u === 0) u = Math.random();
+    while (v === 0) v = Math.random();
+    return Math.sqrt(-2 * Math.log(u)) * Math.cos(2 * Math.PI * v);
+  }
+  function fmtNum(n) { return Math.round(n || 0).toLocaleString("ko-KR"); }
+
+  function readSeries(history, tierKey) {
+    var obj = history && history[tierKey];
+    if (!obj) return [];
+    var out = [];
+    for (var k in obj) {
+      var c = obj[k];
+      if (c && typeof c.t === "number") out.push(c);
+    }
+    out.sort(function (a, b) { return a.t - b.t; });
+    return out;
+  }
+  function bestSeries(history) {
+    for (var i = 0; i < TIERS.length; i++) {
+      var s = readSeries(history, TIERS[i].key);
+      if (s.length) return { tier: TIERS[i].key, candles: s };
+    }
+    return { tier: null, candles: [] };
+  }
+
+  function needsCatchup(roomData) {
+    if (!roomData || roomData.status !== "playing") return false;
+    var last = (roomData.market && roomData.market.lastTickAt) || roomData.marketTick || 0;
+    if (!last) return false;
+    return Date.now() - last >= MIN_CATCHUP_MS;
+  }
+  function staleMinutes(roomData) {
+    var last = (roomData && ((roomData.market && roomData.market.lastTickAt) || roomData.marketTick)) || 0;
+    if (!last) return 0;
+    return Math.max(0, Math.round((Date.now() - last) / 60000));
+  }
+
+  // ===== 오프라인 시뮬레이션(관리자 보정용) =====
+  function simulateStock(stock, fromT, toT, numSteps) {
+    var stepMs = (toT - fromT) / numSteps;
+    var minsPer = Math.max(0.2, stepMs / 60000);
+    var volat = stock.volat || 1, activ = stock.activ || 1;
+    var base = stock.basePrice || stock.price || MIN_PRICE;
+    var price = stock.price || base;
+    var trend = stock.trend || 0;
+    var sigmaMin = 0.0045 * volat;
+    var isEquity = !stock.type || stock.type === "stock";
+    var candles = [];
+    for (var i = 0; i < numSteps; i++) {
+      var t0 = fromT + stepMs * i;
+      var open = price;
+      trend = clamp(trend * 0.96 + randn() * 0.0006 * volat, -0.004, 0.004);
+      var revert = clamp((base - price) / base, -0.2, 0.2) * 0.03;
+      var hi = open, lo = open, cur = open, sub = 4;
+      for (var k = 0; k < sub; k++) {
+        var ret = (trend + revert) * (minsPer / sub) +
+          randn() * sigmaMin * Math.sqrt(minsPer / sub) +
+          (Math.random() < 0.01 ? randn() * 0.01 * (isEquity ? 1 : 0.6) : 0);
+        cur = cur * (1 + ret);
+        cur = clamp(cur, lowerLimit(base), upperLimit(base));
+        cur = Math.max(MIN_PRICE, cur);
+        hi = Math.max(hi, cur); lo = Math.min(lo, cur);
+      }
+      var close = roundToTick(cur);
+      candles.push({ t: t0, o: roundToTick(open), h: roundToTick(hi), l: roundToTick(lo), c: close, v: Math.round((300 + Math.random() * 2200) * activ * minsPer) });
+      price = close;
+      if (Math.random() < 0.02 * minsPer) base = Math.round(base * 0.7 + price * 0.3);
+    }
+    return { candles: candles, finalPrice: price, finalBase: base };
+  }
+  function mergeIntoTiers(stepCandles) {
+    var tiers = {};
+    for (var i = 0; i < TIERS.length; i++) tiers[TIERS[i].key] = {};
+    for (var j = 0; j < stepCandles.length; j++) {
+      var c = stepCandles[j];
+      for (var t = 0; t < TIERS.length; t++) {
+        var bs = bucketStart(c.t, TIERS[t].win);
+        var m = tiers[TIERS[t].key];
+        var ex = m[bs];
+        if (!ex) m[bs] = { t: bs, o: c.o, h: c.h, l: c.l, c: c.c, v: c.v };
+        else { ex.h = Math.max(ex.h, c.h); ex.l = Math.min(ex.l, c.l); ex.c = c.c; ex.v += c.v; }
+      }
+    }
+    return tiers;
+  }
+
+  // 관리자 수동 보정: compat db, rooms/{code} 부분 update. lock 으로 중복 방지.
+  function runCatchUp(db, roomCode, roomData, uid, opts) {
+    opts = opts || {};
+    if (!roomData || !roomData.stocks) return Promise.resolve({ applied: false, reason: "no-stocks" });
+    if (roomData.status !== "playing") return Promise.resolve({ applied: false, reason: "not-playing" });
+    var now = Date.now();
+    var lastTick = (roomData.market && roomData.market.lastTickAt) || roomData.marketTick || 0;
+    var elapsed = now - lastTick;
+    if (!opts.force && elapsed < MIN_CATCHUP_MS) return Promise.resolve({ applied: false, reason: "fresh", elapsed: elapsed });
+
+    var lockRef = db.ref("rooms/" + roomCode + "/market/catchupLock");
+    return lockRef.transaction(function (cur) {
+      if (cur && cur.expiresAt && cur.expiresAt > now) return; // 유효 락 → 중단
+      return { by: uid || "admin", at: now, expiresAt: now + LOCK_TTL_MS };
+    }).then(function (res) {
+      if (!res.committed && !opts.force) return { applied: false, reason: "locked" };
+      var stocks = roomData.stocks;
+      var ids = Object.keys(stocks);
+      var perStock = clamp(Math.round(WRITE_BUDGET / ids.length), 30, 480);
+      var byMinutes = Math.max(1, Math.round(elapsed / 60000));
+      var numSteps = Math.min(perStock, byMinutes, 480);
+      var updates = {};
+      var candlesWritten = 0;
+      ids.forEach(function (id) {
+        var s = stocks[id];
+        if (!s || typeof s.price !== "number") return;
+        var sim = simulateStock(s, lastTick, now, numSteps);
+        var tierObjs = mergeIntoTiers(sim.candles);
+        var P = "stocks/" + id + "/";
+        var hist = s.history || {};
+        TIERS.forEach(function (tier) {
+          var existing = hist[tier.key] || {};
+          var merged = {};
+          for (var ek in existing) merged[ek] = existing[ek];
+          for (var bk in tierObjs[tier.key]) {
+            var cd = tierObjs[tier.key][bk], prev = merged[bk];
+            merged[bk] = prev ? { t: cd.t, o: prev.o, h: Math.max(prev.h, cd.h), l: Math.min(prev.l, cd.l), c: cd.c, v: (prev.v || 0) + cd.v } : cd;
+          }
+          var keysAsc = Object.keys(merged).map(Number).sort(function (a, b) { return a - b; });
+          var overflow = keysAsc.length - tier.cap;
+          if (overflow > 0) for (var i = 0; i < overflow; i++) updates[P + "history/" + tier.key + "/" + keysAsc[i]] = null;
+          var floorKey = keysAsc[Math.max(0, overflow)];
+          for (var bk2 in tierObjs[tier.key]) {
+            if (Number(bk2) < floorKey) continue;
+            updates[P + "history/" + tier.key + "/" + bk2] = merged[bk2];
+            candlesWritten++;
+          }
+        });
+        var base = sim.finalBase;
+        var finalPrice = Math.max(MIN_PRICE, roundToTick(sim.finalPrice));
+        var volSum = sim.candles.reduce(function (a, c) { return a + (c.v || 0); }, 0);
+        updates[P + "previousPrice"] = s.price;
+        updates[P + "price"] = finalPrice;
+        updates[P + "currentPrice"] = finalPrice;
+        updates[P + "basePrice"] = base;
+        updates[P + "changeRate"] = +(((finalPrice - base) / base) * 100).toFixed(2);
+        updates[P + "volume"] = (s.volume || 0) + volSum;
+        updates[P + "value"] = (s.value || 0) + volSum * finalPrice;
+        if (finalPrice > (s.high || s.price)) updates[P + "high"] = finalPrice;
+        if (finalPrice < (s.low || s.price)) updates[P + "low"] = finalPrice;
+        if (s.heat) updates[P + "heat"] = 0;
+        if (s.pressure) updates[P + "pressure"] = 0;
+      });
+      updates["market/tickMs"] = 4000;
+      updates["market/lastTickAt"] = now;
+      updates["market/lastHistoryAt"] = now;
+      updates["market/lastCatchupAt"] = now;
+      updates["market/catchupVersion"] = 1;
+      updates["market/catchupBy"] = uid || "admin";
+      updates["market/catchupLock"] = null;
+      updates["marketTick"] = now;
+      return db.ref("rooms/" + roomCode).update(updates).then(function () {
+        return { applied: true, elapsed: elapsed, numSteps: numSteps, candlesWritten: candlesWritten, stocks: ids.length };
+      });
+    });
+  }
+
+  // ===== 경량 캔들 차트 (읽기 전용) =====
+  // canvas 에 candles([{t,o,h,l,c,v}]) 를 그린다. opts.dark=true 면 다크 톤.
+  function getCss(name, fallback) {
+    try { var v = getComputedStyle(document.body).getPropertyValue(name).trim(); return v || fallback; } catch (e) { return fallback; }
+  }
+  function renderChart(canvas, candles, opts) {
+    if (!canvas) return;
+    opts = opts || {};
+    var up = opts.up || getCss("--up", "#f23645");
+    var down = opts.down || getCss("--down", "#1f6feb");
+    var axisText = opts.axis || getCss("--muted", "#8b93a7");
+    var dpr = window.devicePixelRatio || 1;
+    var cssW = canvas.clientWidth || 600, cssH = canvas.clientHeight || 240;
+    canvas.width = Math.round(cssW * dpr); canvas.height = Math.round(cssH * dpr);
+    var ctx = canvas.getContext("2d");
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.clearRect(0, 0, cssW, cssH);
+    if (!candles || !candles.length) {
+      ctx.fillStyle = axisText; ctx.font = "13px sans-serif"; ctx.textAlign = "center";
+      ctx.fillText("차트 데이터가 아직 없습니다", cssW / 2, cssH / 2);
+      return null;
+    }
+    var RIGHT = 56, plotW = cssW - RIGHT, volH = cssH * 0.18, gap = cssH * 0.06, priceH = cssH - volH - gap;
+    var hi = -Infinity, lo = Infinity, maxV = 0;
+    candles.forEach(function (c) { hi = Math.max(hi, c.h); lo = Math.min(lo, c.l); maxV = Math.max(maxV, c.v || 0); });
+    if (hi === lo) { hi += 1; lo -= 1; }
+    var pad = (hi - lo) * 0.14; hi += pad; lo -= pad;
+    var yP = function (p) { return priceH * (1 - (p - lo) / (hi - lo)); };
+    ctx.font = "11px sans-serif"; ctx.textBaseline = "middle";
+    for (var i = 0; i <= 4; i++) {
+      var y = (priceH / 4) * i, price = hi - ((hi - lo) / 4) * i;
+      ctx.strokeStyle = "rgba(130,140,165,0.14)"; ctx.lineWidth = 1;
+      ctx.beginPath(); ctx.moveTo(0, Math.round(y) + 0.5); ctx.lineTo(plotW, Math.round(y) + 0.5); ctx.stroke();
+      ctx.fillStyle = axisText; ctx.textAlign = "left";
+      ctx.fillText(fmtNum(price), plotW + 6, Math.min(priceH - 6, Math.max(8, y)));
+    }
+    var n = Math.max(candles.length, 14), cw = plotW / n, bodyW = Math.max(2.5, Math.min(14, cw * 0.64));
+    var hover = (opts.hover != null) ? opts.hover : -1;
+    if (hover >= 0 && hover < candles.length) {
+      var hx = hover * cw + cw / 2;
+      ctx.strokeStyle = "rgba(130,145,180,0.6)"; ctx.lineWidth = 1; ctx.setLineDash([3, 3]);
+      ctx.beginPath(); ctx.moveTo(Math.round(hx) + 0.5, 0); ctx.lineTo(Math.round(hx) + 0.5, cssH); ctx.stroke(); ctx.setLineDash([]);
+    }
+    candles.forEach(function (c, idx) {
+      var x = idx * cw + cw / 2, isUp = c.c >= c.o, color = isUp ? up : down;
+      ctx.strokeStyle = color; ctx.fillStyle = color; ctx.lineWidth = 1;
+      ctx.beginPath(); ctx.moveTo(Math.round(x) + 0.5, yP(c.h)); ctx.lineTo(Math.round(x) + 0.5, yP(c.l)); ctx.stroke();
+      var yo = yP(c.o), yc = yP(c.c), top = Math.min(yo, yc), bh = Math.max(1.5, Math.abs(yc - yo));
+      ctx.fillRect(x - bodyW / 2, top, bodyW, bh);
+      if (maxV > 0) { var vh = (volH - 4) * ((c.v || 0) / maxV); ctx.globalAlpha = 0.4; ctx.fillRect(x - bodyW / 2, cssH - vh, bodyW, vh); ctx.globalAlpha = 1; }
+    });
+    var last = candles[candles.length - 1].c;
+    if (last <= hi && last >= lo) {
+      var ly0 = yP(last), col = last >= (candles[0].o || last) ? up : down;
+      ctx.strokeStyle = col; ctx.lineWidth = 1; ctx.setLineDash([4, 3]);
+      ctx.beginPath(); ctx.moveTo(0, Math.round(ly0) + 0.5); ctx.lineTo(plotW, Math.round(ly0) + 0.5); ctx.stroke(); ctx.setLineDash([]);
+    }
+    return { cw: cw, plotW: plotW, candles: candles, cssW: cssW, cssH: cssH };
+  }
+
+  // 캔버스 + 기간버튼 + 호버 상세를 묶은 인터랙티브 차트 마운트(읽기 전용)
+  // host: { canvas, periodsEl, tipEl }, getHistory: function(period)->candles
+  function mountInteractive(host, getCandles, opts) {
+    opts = opts || {};
+    var geom = null, hover = -1;
+    function draw(period) {
+      var candles = getCandles(period);
+      hover = -1;
+      geom = renderChart(host.canvas, candles, opts);
+      if (host.tipEl) host.tipEl.classList.add("hidden");
+    }
+    if (host.periodsEl) {
+      host.periodsEl.addEventListener("click", function (e) {
+        var btn = e.target.closest("[data-period]");
+        if (!btn) return;
+        host.periodsEl.querySelectorAll("[data-period]").forEach(function (b) { b.classList.toggle("is-active", b === btn); });
+        draw(btn.getAttribute("data-period"));
+      });
+    }
+    function onMove(e) {
+      if (!geom) return;
+      var rect = host.canvas.getBoundingClientRect();
+      var px = (e.touches ? e.touches[0].clientX : e.clientX) - rect.left;
+      var idx = Math.max(0, Math.min(geom.candles.length - 1, Math.floor(px / geom.cw)));
+      if (idx === hover) return;
+      hover = idx;
+      geom = renderChart(host.canvas, geom.candles, Object.assign({}, opts, { hover: idx }));
+      if (host.tipEl) showTip(host.tipEl, geom, idx);
+    }
+    function onLeave() { hover = -1; if (geom) geom = renderChart(host.canvas, geom.candles, opts); if (host.tipEl) host.tipEl.classList.add("hidden"); }
+    host.canvas.addEventListener("mousemove", onMove);
+    host.canvas.addEventListener("mouseleave", onLeave);
+    host.canvas.addEventListener("touchstart", onMove, { passive: true });
+    host.canvas.addEventListener("touchmove", onMove, { passive: true });
+    host.canvas.addEventListener("touchend", onLeave);
+    return { draw: draw, redraw: function () { if (geom) draw(opts.period || "1d"); } };
+  }
+  function showTip(tip, geom, idx) {
+    var c = geom.candles[idx]; if (!c) return;
+    var rate = c.o ? ((c.c - c.o) / c.o) * 100 : 0;
+    var cls = rate > 0 ? "up" : rate < 0 ? "down" : "flat";
+    var when = c.t > 1e11 ? new Date(c.t).toLocaleString("ko-KR", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" }) : "구간 " + (idx + 1);
+    tip.innerHTML = '<div class="tip-when">' + when + '</div>' +
+      '<div class="tip-row"><span>시작</span><b>' + fmtNum(c.o) + '</b></div>' +
+      '<div class="tip-row"><span>마지막</span><b>' + fmtNum(c.c) + '</b></div>' +
+      '<div class="tip-row"><span>최고</span><b class="up">' + fmtNum(c.h) + '</b></div>' +
+      '<div class="tip-row"><span>최저</span><b class="down">' + fmtNum(c.l) + '</b></div>' +
+      '<div class="tip-row"><span>거래량</span><b>' + fmtNum(c.v) + '</b></div>' +
+      '<div class="tip-row"><span>등락률</span><b class="' + cls + '">' + (rate >= 0 ? "+" : "") + rate.toFixed(2) + '%</b></div>';
+    tip.classList.remove("hidden");
+    var x = idx * geom.cw + geom.cw / 2;
+    var right = x > geom.plotW * 0.6;
+    tip.style.left = right ? "" : (x + 10) + "px";
+    tip.style.right = right ? (geom.cssW - x + 10) + "px" : "";
+    tip.style.top = "8px";
+  }
+
+  // 기간 → tier 매핑 + 시리즈 빌더 (history 객체 입력)
+  var PERIOD_MAP = {
+    "1d": ["candles1m"], "1w": ["candles5m", "candles1m"], "3m": ["candles15m", "candles5m"],
+    "1y": ["candles1h", "candles15m"], "5y": ["candles1h"], "all": ["candles1h", "candles15m", "candles5m", "candles1m"],
+  };
+  function seriesFor(history, period, count) {
+    var tiers = PERIOD_MAP[period] || PERIOD_MAP["1d"];
+    var s = [];
+    for (var i = 0; i < tiers.length; i++) { s = readSeries(history, tiers[i]); if (s.length) break; }
+    if (!s.length) { var b = bestSeries(history); s = b.candles; }
+    count = count || 240;
+    if (s.length > count) s = s.slice(s.length - count);
+    return s;
+  }
+
+  window.MarketHistory = {
+    TIERS: TIERS,
+    readSeries: readSeries,
+    bestSeries: bestSeries,
+    seriesFor: seriesFor,
+    needsCatchup: needsCatchup,
+    staleMinutes: staleMinutes,
+    runCatchUp: runCatchUp,
+    renderChart: renderChart,
+    mountInteractive: mountInteractive,
+    fmtNum: fmtNum,
+  };
+})();

@@ -881,6 +881,7 @@
     root.querySelectorAll("[data-room-select]").forEach((b) => b.addEventListener("click", () => { void selectRoom(b.dataset.roomSelect); }));
     root.querySelectorAll("[data-room-delete]").forEach((b) => b.addEventListener("click", () => openDeleteModal(b.dataset.roomDelete)));
     root.querySelectorAll("[data-room-restore]").forEach((b) => b.addEventListener("click", () => { void restoreRoomAction(b.dataset.roomRestore); }));
+    root.querySelectorAll("[data-room-catchup]").forEach((b) => b.addEventListener("click", () => { void catchUpAction(b.dataset.roomCatchup, b); }));
   }
 
   function roomRow(r) {
@@ -893,23 +894,56 @@
     const tail = r.deleted
       ? `<button class="button small" type="button" data-room-restore="${escAttr(r.code)}">복구</button>`
       : `<button class="button danger small" type="button" data-room-delete="${escAttr(r.code)}">삭제</button>`;
+    // 시장 경과/보정 상태
+    const isPlaying = ["playing", "active", "running"].includes(r.status);
+    const staleTxt = r.lastTickAt
+      ? (r.staleMin >= 2 ? `<span class="status-badge warn">${r.staleMin}분 정지</span>` : `<span class="status-badge ok">실시간</span>`)
+      : `<span class="status-badge muted">tick 기록 없음</span>`;
+    const catchBtn = (!r.deleted && isPlaying && r.staleMin >= 2)
+      ? `<button class="button small" type="button" data-room-catchup="${escAttr(r.code)}">시장 경과 보정 실행</button>`
+      : "";
     return `<article class="room-card${sel}">
       <div class="room-card-head">
         <button class="room-code-btn" type="button" data-room-select="${escAttr(r.code)}">${esc(r.code)}</button>
         <span class="status-badge ${statusType}">${esc(r.deleted ? "삭제됨" : r.status)}</span>
+        ${isPlaying ? staleTxt : ""}
         ${r.pending ? `<span class="status-badge warn">승인대기 ${r.pending}</span>` : ""}
         ${r.code === state.roomCode ? `<span class="status-badge ok">선택됨</span>` : ""}
       </div>
-      <div class="room-card-meta">참여 ${r.players} · 종목 ${r.stocks} · 뉴스 ${r.news} · 공시 ${r.disclosures}</div>
+      <div class="room-card-meta">참여 ${r.players} · 종목 ${r.stocks} · 뉴스 ${r.news} · 공시 ${r.disclosures} · 캔들 ${r.historyCandles}</div>
       <div class="room-card-meta muted">host ${esc((r.hostId || "-").slice(0, 8))} · 생성 ${esc(fmtTime(r.createdAt))} · 수정 ${esc(fmtTime(r.updatedAt))}</div>
+      <div class="room-card-meta muted">최근 tick ${esc(fmtTime(r.lastTickAt))} · 최근 보정 ${esc(fmtTime(r.lastCatchupAt))}</div>
       <div class="room-card-actions">
         <button class="button small" type="button" data-room-select="${escAttr(r.code)}">선택·로드</button>
         <a class="button small" href="${escAttr(battle)}" target="_blank" rel="noopener">주식시장</a>
         <a class="button small" href="${escAttr(board)}" target="_blank" rel="noopener">주식소식</a>
         <a class="button small" href="${escAttr(wiki)}" target="_blank" rel="noopener">주식정보</a>
+        ${catchBtn}
         ${tail}
       </div>
     </article>`;
+  }
+
+  async function catchUpAction(code, btn) {
+    if (!code) return;
+    const notice = $("#roomsNotice");
+    const RB = window.RoomBridge;
+    if (!RB || !RB.runCatchUp) { setNoticeEl(notice, "보정 기능 미로드 (market-history.js 확인)", "error"); return; }
+    if (!confirm(`'${code}' 방의 시장 경과를 보정할까요?\n사람이 없던 시간을 압축 캔들로 반영하고 최종 가격을 갱신합니다.`)) return;
+    if (btn) { btn.disabled = true; btn.textContent = "보정 중..."; }
+    setNoticeEl(notice, `'${code}' 시장 경과 보정 중...`, "");
+    try {
+      const res = await RB.runCatchUp(code, adminUid(), {});
+      if (res && res.applied) {
+        setNoticeEl(notice, `'${code}' 보정 완료: ${Math.round(res.elapsed / 60000)}분 경과, 캔들 ${res.candlesWritten}개, 종목 ${res.stocks}`, "ok");
+      } else {
+        setNoticeEl(notice, `'${code}' 보정 불필요/중복: ${(res && res.reason) || "-"}`, "warn");
+      }
+      await renderRooms();
+    } catch (e) {
+      setNoticeEl(notice, "보정 실패: " + (e && e.message), "error");
+      if (btn) { btn.disabled = false; btn.textContent = "시장 경과 보정 실행"; }
+    }
   }
 
   async function selectRoom(code) {

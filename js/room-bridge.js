@@ -346,6 +346,16 @@
     const meta = r.meta || {};
     const jr = r.joinRequests || {};
     const pending = Object.values(jr).filter((x) => x && x.status === "pending").length;
+    const market = r.market || {};
+    const lastTickAt = market.lastTickAt || r.marketTick || null;
+    // history 캔들 보유 여부(첫 종목 기준 간단 점검)
+    let historyCandles = 0;
+    if (r.stocks) {
+      for (const s of Object.values(r.stocks)) {
+        const h = s && s.history;
+        if (h) { for (const tk in h) historyCandles += Object.keys(h[tk] || {}).length; }
+      }
+    }
     return {
       code,
       status: meta.deleted ? "deleted" : (r.status || meta.status || "unknown"),
@@ -360,7 +370,25 @@
       news: r.news ? Object.keys(r.news).length : 0,
       disclosures: r.disclosures ? Object.keys(r.disclosures).length : 0,
       pending,
+      // 시장 경과/보정 상태 (1.4.x)
+      lastTickAt,
+      lastCatchupAt: market.lastCatchupAt || null,
+      historyCandles,
+      staleMin: lastTickAt ? Math.max(0, Math.round((Date.now() - lastTickAt) / 60000)) : null,
     };
+  }
+
+  // ── 시장 경과 보정 실행 (관리자 수동, 부분 update) ──
+  // 자동/주기 실행 금지. 버튼 클릭 시 1회. 공용 MarketHistory.runCatchUp 재사용.
+  async function runCatchUp(code, adminId, opts) {
+    const database = db();
+    if (!database) throw new Error("Firebase 미연결");
+    if (!window.MarketHistory || !window.MarketHistory.runCatchUp) throw new Error("MarketHistory 미로드");
+    const room = await loadRoom(code);
+    if (!room) throw new Error("방을 찾을 수 없습니다");
+    const res = await window.MarketHistory.runCatchUp(database, code, room, adminId, opts || {});
+    if (res && res.applied) stat.lastWriteAt = Date.now();
+    return res;
   }
 
   async function loadAllRooms() {
@@ -453,6 +481,7 @@
     approveJoinRequest,
     rejectJoinRequest,
     loadAllRooms,
+    runCatchUp,
     softDeleteRoom,
     hardDeleteRoom,
     restoreRoom,
