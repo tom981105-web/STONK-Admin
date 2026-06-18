@@ -439,6 +439,54 @@
     return { code, backupKey: key };
   }
 
+  // ── 시장 (재)시작 ── 단일 방 운영: 종목/뉴스/로그/예약주문을 새로 만들고
+  // 모든 플레이어 현금을 시작 자본으로 초기화한다(명단/닉네임/스킨은 유지). status=playing.
+  // 방이 아예 없었다면 첫 시작으로 새로 만든다(이후 이용자는 battle 에서 자동 등록).
+  async function resetMarket(code, adminId) {
+    const database = db();
+    if (!database) throw new Error("Firebase 미연결");
+    if (!window.MarketSeed) throw new Error("MarketSeed(js/market-seed.js) 가 로드되지 않았습니다");
+    code = code || "MAIN";
+    const now = Date.now();
+    // 기존 방 읽어 명단(players) 유지
+    let room = null;
+    try { const s = await database.ref("rooms/" + code).once("value"); room = s.val(); } catch (e) {}
+    // 되돌릴 수 없는 초기화이므로 백업
+    try { backup(code, room, "market reset (시장 재시작) by " + (adminId || "admin"), "Firebase"); } catch (e) {}
+
+    const START = window.MarketSeed.START_CASH;
+    const stocks = window.MarketSeed.generateStocks();
+    const base = `rooms/${code}/`;
+    const updates = {};
+    updates[base + "status"] = "playing";
+    updates[base + "startedAt"] = now;
+    updates[base + "endsAt"] = null;
+    updates[base + "stocks"] = stocks;          // 전체 교체(새 종목 + 빈 history)
+    updates[base + "logs"] = null;
+    updates[base + "latestNews"] = null;
+    updates[base + "botFeed"] = null;
+    updates[base + "orders"] = null;
+    updates[base + "ipo"] = null;
+    updates[base + "joinRequests"] = null;
+    updates[base + "marketTick"] = now;
+    updates[base + "market"] = { tickMs: 4000, lastTickAt: now, lastHistoryAt: now };
+    // 명단 유지 + 자산만 초기화 (nickname/connected/equippedBackground 등 다른 필드는 보존)
+    const players = (room && room.players) || {};
+    for (const uid of Object.keys(players)) {
+      updates[base + `players/${uid}/cash`] = START;
+      updates[base + `players/${uid}/holdings`] = null;
+      updates[base + `players/${uid}/avgCost`] = null;
+      updates[base + `players/${uid}/totalAsset`] = START;
+    }
+    updates[base + "meta/updatedAt"] = now;
+    updates[base + "meta/lastResetAt"] = now;
+    updates[base + "meta/lastResetBy"] = adminId || "admin";
+    updates[base + "meta/deleted"] = false; // 혹시 soft-delete 상태였다면 해제
+    await database.ref().update(updates);
+    stat.lastWriteAt = now;
+    return { code, players: Object.keys(players).length, stocks: Object.keys(stocks).length };
+  }
+
   // 방 복구 (soft delete 취소) — meta 플래그만 제거성 update
   async function restoreRoom(code, adminId) {
     const database = db();
@@ -485,6 +533,7 @@
     softDeleteRoom,
     hardDeleteRoom,
     restoreRoom,
+    resetMarket,
     backup,
     listBackups,
     getBackup,

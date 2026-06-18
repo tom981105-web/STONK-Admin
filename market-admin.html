@@ -126,9 +126,11 @@
           <h1>전체 방 관리</h1>
         </div>
         <div class="head-actions">
+          <button id="resetMarketBtn" class="button danger" type="button" title="단일 방(MAIN) 시장을 새로 시작합니다">🔄 시장 재시작</button>
           <button id="refreshRooms" class="button ghost" type="button">새로고침</button>
         </div>
       </div>
+      <p class="room-notice" style="margin:0 0 12px">단일 방 운영: <b>시장 재시작</b>을 누르면 새 종목·뉴스로 시장이 다시 시작되고 모든 플레이어의 현금이 시작 자본으로 초기화됩니다(참가자 명단은 유지). <b id="resetMarketMsg"></b></p>
       <div id="roomsStats" class="stat-grid"></div>
       <article class="card">
         <div class="card-title">
@@ -457,6 +459,7 @@
 
   <script src="js/site-config.js?v=1.4.0"></script>
   <script src="js/market-history.js?v=1.4.0"></script>
+  <script src="js/market-seed.js?v=1.4.0"></script>
   <script src="js/room-bridge.js?v=1.4.0"></script>
   <script src="js/market-admin-data.js"></script>
   <script src="js/market-admin.js"></script>

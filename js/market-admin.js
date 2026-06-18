@@ -194,6 +194,8 @@
     // 1.4.0 전체 방 관리
     const refreshRoomsBtn = $("#refreshRooms");
     if (refreshRoomsBtn) refreshRoomsBtn.addEventListener("click", () => { void renderRooms(); });
+    const resetMarketBtn = $("#resetMarketBtn");
+    if (resetMarketBtn) resetMarketBtn.addEventListener("click", () => { void resetMarketNow(); });
     const roomsSearch = $("#roomsSearch");
     if (roomsSearch) roomsSearch.addEventListener("input", renderRoomsList);
     const roomsFilter = $("#roomsStatusFilter");
@@ -819,6 +821,26 @@
   }
 
   // ===== 1.4.0: 전체 방 관리 =====
+  // 단일 방(MAIN) 시장 (재)시작 — 종목/뉴스/로그 새로 생성 + 플레이어 자산 초기화(명단 유지)
+  async function resetMarketNow() {
+    const RB = window.RoomBridge;
+    const msg = $("#resetMarketMsg");
+    if (!state.admin) { if (msg) msg.textContent = "관리자만 사용할 수 있습니다."; return; }
+    if (!RB || !RB.resetMarket || !RB.hasFirebase()) { if (msg) msg.textContent = "Firebase 미연결 또는 RoomBridge 미로드"; return; }
+    const ok = window.confirm(
+      "단일 방(MAIN) 시장을 재시작합니다.\n\n· 새 종목·뉴스로 시장이 다시 시작됩니다\n· 모든 플레이어의 현금이 시작 자본으로 초기화됩니다 (보유 주식 정리)\n· 참가자 명단/닉네임은 유지됩니다\n\n진행할까요?"
+    );
+    if (!ok) return;
+    if (msg) msg.textContent = "시장 재시작 중…";
+    try {
+      const res = await RB.resetMarket("MAIN", adminUid());
+      if (msg) msg.textContent = `✅ 재시작 완료 — 종목 ${res.stocks}개 · 플레이어 ${res.players}명 초기화 (${new Date().toLocaleTimeString("ko-KR")})`;
+      await renderRooms();
+    } catch (e) {
+      if (msg) msg.textContent = "❌ 실패: " + (e && e.message ? e.message : e);
+    }
+  }
+
   async function renderRooms() {
     const root = $("#roomsList");
     const notice = $("#roomsNotice");
