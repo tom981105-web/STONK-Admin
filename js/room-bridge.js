@@ -487,6 +487,24 @@
     return { code, players: Object.keys(players).length, stocks: Object.keys(stocks).length };
   }
 
+  // ── MAIN(유지할 방) 외 전체 방 완전 삭제 ── 단일 방 운영 정리용. 삭제 전 전체 백업.
+  async function purgeOtherRooms(keepCode, adminId) {
+    const database = db();
+    if (!database) throw new Error("Firebase 미연결");
+    keepCode = (keepCode || "MAIN").toUpperCase();
+    const snap = await database.ref("rooms").once("value");
+    const rooms = snap.exists() ? snap.val() : {};
+    const codes = Object.keys(rooms).filter((c) => c !== keepCode);
+    if (!codes.length) return { removed: 0, kept: keepCode, codes: [] };
+    // 되돌릴 수 없으므로 전체 rooms 백업 1회
+    try { backup("ALL_ROOMS", rooms, `purge other rooms (keep ${keepCode}) by ${adminId || "admin"}`, "Firebase"); } catch (e) {}
+    const updates = {};
+    for (const c of codes) updates[`rooms/${c}`] = null; // 각 방만 null → 완전 삭제
+    await database.ref().update(updates);
+    stat.lastWriteAt = Date.now();
+    return { removed: codes.length, kept: keepCode, codes };
+  }
+
   // 방 복구 (soft delete 취소) — meta 플래그만 제거성 update
   async function restoreRoom(code, adminId) {
     const database = db();
@@ -534,6 +552,7 @@
     hardDeleteRoom,
     restoreRoom,
     resetMarket,
+    purgeOtherRooms,
     backup,
     listBackups,
     getBackup,

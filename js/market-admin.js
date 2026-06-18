@@ -196,6 +196,8 @@
     if (refreshRoomsBtn) refreshRoomsBtn.addEventListener("click", () => { void renderRooms(); });
     const resetMarketBtn = $("#resetMarketBtn");
     if (resetMarketBtn) resetMarketBtn.addEventListener("click", () => { void resetMarketNow(); });
+    const purgeRoomsBtn = $("#purgeRoomsBtn");
+    if (purgeRoomsBtn) purgeRoomsBtn.addEventListener("click", () => { void purgeOtherRoomsNow(); });
     const roomsSearch = $("#roomsSearch");
     if (roomsSearch) roomsSearch.addEventListener("input", renderRoomsList);
     const roomsFilter = $("#roomsStatusFilter");
@@ -835,6 +837,26 @@
     try {
       const res = await RB.resetMarket("MAIN", adminUid());
       if (msg) msg.textContent = `✅ 재시작 완료 — 종목 ${res.stocks}개 · 플레이어 ${res.players}명 초기화 (${new Date().toLocaleTimeString("ko-KR")})`;
+      await renderRooms();
+    } catch (e) {
+      if (msg) msg.textContent = "❌ 실패: " + (e && e.message ? e.message : e);
+    }
+  }
+
+  // MAIN 외 전체 방 완전 삭제
+  async function purgeOtherRoomsNow() {
+    const RB = window.RoomBridge;
+    const msg = $("#resetMarketMsg");
+    if (!state.admin) { if (msg) msg.textContent = "관리자만 사용할 수 있습니다."; return; }
+    if (!RB || !RB.purgeOtherRooms || !RB.hasFirebase()) { if (msg) msg.textContent = "Firebase 미연결 또는 RoomBridge 미로드"; return; }
+    const ok = window.confirm(
+      "MAIN 방만 남기고 나머지 방을 모두 완전 삭제합니다.\n\n· 되돌릴 수 없습니다 (삭제 전 localStorage 백업은 생성)\n· MAIN 방의 데이터는 그대로 유지됩니다\n\n진행할까요?"
+    );
+    if (!ok) return;
+    if (msg) msg.textContent = "방 정리 중…";
+    try {
+      const res = await RB.purgeOtherRooms("MAIN", adminUid());
+      if (msg) msg.textContent = `✅ 완료 — MAIN 외 ${res.removed}개 방 삭제 (${new Date().toLocaleTimeString("ko-KR")})`;
       await renderRooms();
     } catch (e) {
       if (msg) msg.textContent = "❌ 실패: " + (e && e.message ? e.message : e);
