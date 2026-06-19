@@ -523,6 +523,69 @@
     return { removed: codes.length, kept: keepCode, codes };
   }
 
+  // ── 플레이어 관리 (Admin 플레이어 탭) ──
+  // 플레이어 목록: rooms/{code}/players 와 rooms/{code}/bank 를 uid 로 합쳐 반환
+  async function loadPlayersFull(code) {
+    const database = db();
+    if (!database) throw new Error("Firebase 미연결");
+    code = code || "MAIN";
+    const snap = await database.ref("rooms/" + code).once("value");
+    const room = snap.exists() ? snap.val() : {};
+    const players = room.players || {};
+    const bank = room.bank || {};
+    const out = [];
+    Object.entries(players).forEach(([uid, p]) => {
+      out.push({
+        uid, nickname: (p && p.nickname) || "", cash: Number((p && p.cash) || 0),
+        bank: Number((bank[uid] && bank[uid].balance) || 0),
+        holdings: p && p.holdings ? Object.keys(p.holdings).length : 0,
+        skins: p && p.gachaInventory ? Object.values(p.gachaInventory).filter((v) => Number(v) > 0).length : 0,
+        connected: !p || p.connected !== false,
+      });
+    });
+    // 입장은 안 했지만 금고만 있는(Home 전용) 유저도 포함
+    Object.keys(bank).forEach((uid) => {
+      if (players[uid]) return;
+      out.push({ uid, nickname: (bank[uid].nickname || ""), cash: 0, bank: Number(bank[uid].balance || 0), holdings: 0, skins: 0, connected: false, bankOnly: true });
+    });
+    return out.sort((a, b) => (b.cash + b.bank) - (a.cash + a.bank));
+  }
+  async function adjustPlayerCash(code, uid, delta) {
+    const database = db(); if (!database) throw new Error("Firebase 미연결");
+    const res = await database.ref(`rooms/${code || "MAIN"}/players/${uid}/cash`).transaction((c) => Math.max(0, Math.round((Number(c) || 0) + delta)));
+    stat.lastWriteAt = Date.now();
+    return Number(res.snapshot.val() || 0);
+  }
+  async function adjustPlayerBank(code, uid, delta) {
+    const database = db(); if (!database) throw new Error("Firebase 미연결");
+    const res = await database.ref(`rooms/${code || "MAIN"}/bank/${uid}/balance`).transaction((b) => Math.max(0, Math.round((Number(b) || 0) + delta)));
+    stat.lastWriteAt = Date.now();
+    return Number(res.snapshot.val() || 0);
+  }
+  async function grantPlayerSkin(code, uid, skinId, n) {
+    const database = db(); if (!database) throw new Error("Firebase 미연결");
+    await database.ref(`rooms/${code || "MAIN"}/players/${uid}/gachaInventory/${skinId}`).transaction((v) => Math.max(0, (Number(v) || 0) + (n || 1)));
+    stat.lastWriteAt = Date.now();
+  }
+  // 우편 발송 (현금/쿠폰/스킨). toUid 가 "*" 이면 전체 플레이어에게 발송(이벤트 지급).
+  async function sendMail(code, toUid, mail, adminId) {
+    const database = db(); if (!database) throw new Error("Firebase 미연결");
+    code = code || "MAIN";
+    const base = Object.assign({ createdAt: Date.now(), claimed: false, from: mail.from || "운영자", by: adminId || "admin" }, mail);
+    if (toUid === "*") {
+      const list = await loadPlayersFull(code);
+      const updates = {};
+      list.forEach((p) => { const mid = database.ref(`rooms/${code}/mail/${p.uid}`).push().key; updates[`rooms/${code}/mail/${p.uid}/${mid}`] = base; });
+      await database.ref().update(updates);
+      stat.lastWriteAt = Date.now();
+      return { sent: list.length };
+    }
+    const mid = database.ref(`rooms/${code}/mail/${toUid}`).push().key;
+    await database.ref(`rooms/${code}/mail/${toUid}/${mid}`).set(base);
+    stat.lastWriteAt = Date.now();
+    return { sent: 1 };
+  }
+
   // 방 복구 (soft delete 취소) — meta 플래그만 제거성 update
   async function restoreRoom(code, adminId) {
     const database = db();
@@ -588,6 +651,11 @@
     restoreRoom,
     resetMarket,
     purgeOtherRooms,
+    loadPlayersFull,
+    adjustPlayerCash,
+    adjustPlayerBank,
+    grantPlayerSkin,
+    sendMail,
     forceReloadClients,
     backup,
     listBackups,

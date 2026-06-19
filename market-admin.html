@@ -91,6 +91,7 @@
     </div>
     <nav class="tabbar" aria-label="Market Admin 메뉴">
       <button class="tab-button active" type="button" data-tab="rooms">전체 방 관리</button>
+      <button class="tab-button" type="button" data-tab="players">플레이어</button>
       <button class="tab-button" type="button" data-tab="dashboard">대시보드</button>
       <button class="tab-button" type="button" data-tab="companies">회사 관리</button>
       <button class="tab-button" type="button" data-tab="news">뉴스 관리</button>
@@ -157,6 +158,21 @@
         <div id="catchupResult" class="catchup-result" hidden></div>
         <div id="roomsList" class="rooms-list"></div>
       </article>
+    </section>
+
+    <section id="players" class="tab-panel" data-panel="players">
+      <div class="panel-head">
+        <div>
+          <p class="eyebrow">Players</p>
+          <h1>플레이어 관리</h1>
+        </div>
+        <div class="head-actions">
+          <button id="mailAllBtn" class="button" type="button" title="전체 플레이어에게 우편(현금/메시지)을 보냅니다">📨 전체 우편(이벤트)</button>
+          <button id="refreshPlayers" class="button ghost" type="button">새로고침</button>
+        </div>
+      </div>
+      <p class="room-notice" style="margin:0 0 12px">각 플레이어의 <b>시장 현금·금고·스킨</b>을 지급/회수하고, 우편(현금/쿠폰/스킨)을 보낼 수 있습니다. (단일 방 MAIN) <b id="playersMsg"></b></p>
+      <div id="playersList" class="rooms-list"></div>
     </section>
 
     <section id="dashboard" class="tab-panel" data-panel="dashboard">
@@ -459,12 +475,12 @@
     </section>
   </main>
 
-  <script src="js/site-config.js?v=1.5.0"></script>
-  <script src="js/market-history.js?v=1.5.0"></script>
-  <script src="js/market-seed.js?v=1.5.0"></script>
-  <script src="js/room-bridge.js?v=1.5.0"></script>
-  <script src="js/market-admin-data.js?v=1.5.0"></script>
-  <script src="js/market-admin.js?v=1.5.0"></script>
+  <script src="js/site-config.js?v=1.6.0"></script>
+  <script src="js/market-history.js?v=1.6.0"></script>
+  <script src="js/market-seed.js?v=1.6.0"></script>
+  <script src="js/room-bridge.js?v=1.6.0"></script>
+  <script src="js/market-admin-data.js?v=1.6.0"></script>
+  <script src="js/market-admin.js?v=1.6.0"></script>
   <!-- 사이트 간 이동 링크(roomCode 유지) — 분리 배포 대응 -->
   <script>
     (function () {

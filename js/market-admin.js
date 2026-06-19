@@ -200,6 +200,12 @@
     if (resetMarketBtn) resetMarketBtn.addEventListener("click", () => { void resetMarketNow(); });
     const purgeRoomsBtn = $("#purgeRoomsBtn");
     if (purgeRoomsBtn) purgeRoomsBtn.addEventListener("click", () => { void purgeOtherRoomsNow(); });
+    const refreshPlayersBtn = $("#refreshPlayers");
+    if (refreshPlayersBtn) refreshPlayersBtn.addEventListener("click", () => { void renderPlayers(); });
+    const mailAllBtn = $("#mailAllBtn");
+    if (mailAllBtn) mailAllBtn.addEventListener("click", () => { void mailAllNow(); });
+    const playersList = $("#playersList");
+    if (playersList) playersList.addEventListener("click", (e) => { void onPlayerAction(e); });
     const roomsSearch = $("#roomsSearch");
     if (roomsSearch) roomsSearch.addEventListener("input", renderRoomsList);
     const roomsFilter = $("#roomsStatusFilter");
@@ -249,6 +255,7 @@
     if (tab === "disclosures") renderDisclosuresHint();
     if (tab === "joinRequests") void renderJoinRequests();
     if (tab === "rooms") void renderRooms();
+    if (tab === "players") void renderPlayers();
   }
 
   function showAuthGate(message) {
@@ -882,6 +889,83 @@
     } catch (e) {
       if (msg) msg.textContent = "❌ 실패: " + (e && e.message ? e.message : e);
     }
+  }
+
+  // ===== 플레이어 관리 탭 =====
+  const won = (n) => Math.round(Number(n) || 0).toLocaleString("ko-KR");
+  async function renderPlayers() {
+    const root = $("#playersList"); const msg = $("#playersMsg");
+    if (!root) return;
+    const RB = window.RoomBridge;
+    if (!state.admin) { root.innerHTML = '<div class="room-notice">관리자만 사용할 수 있습니다.</div>'; return; }
+    if (!RB || !RB.loadPlayersFull || !RB.hasFirebase()) { root.innerHTML = '<div class="room-notice">Firebase 미연결</div>'; return; }
+    if (msg) msg.textContent = "불러오는 중…";
+    let players;
+    try { players = await RB.loadPlayersFull("MAIN"); }
+    catch (e) { if (msg) msg.textContent = "로드 실패: " + (e && e.message); return; }
+    if (msg) msg.textContent = `${players.length}명`;
+    root.innerHTML = players.length ? players.map(playerCardHtml).join("") : '<div class="room-notice">플레이어가 없습니다. (아직 아무도 입장/금고 사용 안 함)</div>';
+  }
+  function esc2(s) { return String(s == null ? "" : s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c])); }
+  function playerCardHtml(p) {
+    return `<div class="room-card" data-uid="${esc2(p.uid)}">
+      <div class="room-card-head">
+        <div><b>${esc2(p.nickname || "(닉네임 없음)")}</b> <span class="status-badge ${p.connected ? "" : "muted"}">${p.connected ? "접속" : "오프라인"}</span></div>
+        <small class="muted">uid ${esc2(String(p.uid).slice(0, 12))}…</small>
+      </div>
+      <div class="room-card-stats" style="display:flex;gap:18px;flex-wrap:wrap;margin:6px 0 10px">
+        <span>시장현금 <b>${won(p.cash)}</b></span>
+        <span>🏦 금고 <b>${won(p.bank)}</b></span>
+        <span>보유종목 <b>${p.holdings}</b></span>
+        <span>스킨 <b>${p.skins}</b></span>
+      </div>
+      <div class="head-actions" style="flex-wrap:wrap;gap:6px">
+        <button class="button small" data-pact="cash" data-uid="${esc2(p.uid)}">시장현금 ±</button>
+        <button class="button small" data-pact="bank" data-uid="${esc2(p.uid)}">금고 ±</button>
+        <button class="button small" data-pact="skin" data-uid="${esc2(p.uid)}">스킨 지급</button>
+        <button class="button small" data-pact="mail" data-uid="${esc2(p.uid)}">📨 우편</button>
+      </div>
+    </div>`;
+  }
+  async function onPlayerAction(e) {
+    const btn = e.target.closest("[data-pact]"); if (!btn) return;
+    const RB = window.RoomBridge; const uid = btn.dataset.uid; const act = btn.dataset.pact;
+    const msg = $("#playersMsg");
+    try {
+      if (act === "cash" || act === "bank") {
+        const v = prompt(`${act === "cash" ? "시장 현금" : "금고"} 증감액 (지급:양수, 회수:음수)`, "0");
+        if (v === null) return;
+        const delta = Math.floor(Number(v) || 0); if (!delta) return;
+        const nv = act === "cash" ? await RB.adjustPlayerCash("MAIN", uid, delta) : await RB.adjustPlayerBank("MAIN", uid, delta);
+        if (msg) msg.textContent = `✅ ${act === "cash" ? "시장현금" : "금고"} 조정 완료 → ${won(nv)}`;
+      } else if (act === "skin") {
+        const skinId = prompt("지급할 스킨 ID (예: sbg-dead-cross, sbg-moon-rocket)", "sbg-candle-basic");
+        if (!skinId) return;
+        await RB.grantPlayerSkin("MAIN", uid, skinId.trim(), 1);
+        if (msg) msg.textContent = `✅ 스킨 '${skinId.trim()}' 지급 완료`;
+      } else if (act === "mail") {
+        const type = (prompt("우편 종류: cash / coupon / skin", "cash") || "").trim();
+        if (!type) return;
+        const mail = { type };
+        if (type === "cash") { const a = Math.floor(Number(prompt("보낼 금액(원) — 받는 사람이 수령하면 금고로 들어갑니다", "0")) || 0); if (!a) return; mail.amount = a; }
+        else if (type === "coupon") { mail.coupon = (prompt("쿠폰 코드/내용", "EVENT") || "").trim(); }
+        else if (type === "skin") { mail.itemId = (prompt("스킨 ID", "sbg-dead-cross") || "").trim(); }
+        mail.msg = (prompt("메시지(선택)", "운영자 선물") || "").trim();
+        await RB.sendMail("MAIN", uid, mail, adminUid());
+        if (msg) msg.textContent = "✅ 우편 발송 완료";
+      }
+      await renderPlayers();
+    } catch (err) { if (msg) msg.textContent = "❌ 실패: " + (err && err.message ? err.message : err); }
+  }
+  async function mailAllNow() {
+    const RB = window.RoomBridge; const msg = $("#playersMsg");
+    if (!state.admin || !RB || !RB.sendMail) { if (msg) msg.textContent = "권한/연결 오류"; return; }
+    const a = Math.floor(Number(prompt("전체 플레이어에게 보낼 금액(원) — 수령 시 각자 금고로 들어갑니다", "0")) || 0);
+    if (!a) return;
+    const text = (prompt("메시지", "🎉 패치 기념 이벤트 지급!") || "").trim();
+    if (!window.confirm(`전체 플레이어에게 ${won(a)}원 우편을 보냅니다. 진행할까요?`)) return;
+    try { const r = await RB.sendMail("MAIN", "*", { type: "cash", amount: a, msg: text }, adminUid()); if (msg) msg.textContent = `✅ ${r.sent}명에게 우편 발송 완료`; }
+    catch (e) { if (msg) msg.textContent = "❌ 실패: " + (e && e.message); }
   }
 
   async function renderRooms() {
