@@ -194,6 +194,8 @@
     // 1.4.0 전체 방 관리
     const refreshRoomsBtn = $("#refreshRooms");
     if (refreshRoomsBtn) refreshRoomsBtn.addEventListener("click", () => { void renderRooms(); });
+    const forceReloadBtn = $("#forceReloadBtn");
+    if (forceReloadBtn) forceReloadBtn.addEventListener("click", () => { void forceReloadClientsNow(); });
     const resetMarketBtn = $("#resetMarketBtn");
     if (resetMarketBtn) resetMarketBtn.addEventListener("click", () => { void resetMarketNow(); });
     const purgeRoomsBtn = $("#purgeRoomsBtn");
@@ -843,6 +845,25 @@
     }
   }
 
+  // 접속 중인 모든 battle 이용자 강제 새로고침 — 패치(코드 배포) 즉시 반영. 시장·자산은 유지.
+  async function forceReloadClientsNow() {
+    const RB = window.RoomBridge;
+    const msg = $("#resetMarketMsg");
+    if (!state.admin) { if (msg) msg.textContent = "관리자만 사용할 수 있습니다."; return; }
+    if (!RB || !RB.forceReloadClients || !RB.hasFirebase()) { if (msg) msg.textContent = "Firebase 미연결 또는 RoomBridge 미로드"; return; }
+    const ok = window.confirm(
+      "접속 중인 모든 battle 이용자의 화면을 새로고침합니다.\n\n· 새로 배포된 패치(코드)가 즉시 반영됩니다\n· 시장 진행/종목/플레이어 자산은 그대로 유지됩니다\n\n진행할까요?"
+    );
+    if (!ok) return;
+    if (msg) msg.textContent = "접속자 새로고침 신호 전송 중…";
+    try {
+      await RB.forceReloadClients(adminUid());
+      if (msg) msg.textContent = `📡 접속자 새로고침 신호 전송 완료 (${new Date().toLocaleTimeString("ko-KR")})`;
+    } catch (e) {
+      if (msg) msg.textContent = "❌ 실패: " + (e && e.message ? e.message : e);
+    }
+  }
+
   // MAIN 외 전체 방 완전 삭제
   async function purgeOtherRoomsNow() {
     const RB = window.RoomBridge;
@@ -927,6 +948,26 @@
     root.querySelectorAll("[data-room-delete]").forEach((b) => b.addEventListener("click", () => openDeleteModal(b.dataset.roomDelete)));
     root.querySelectorAll("[data-room-restore]").forEach((b) => b.addEventListener("click", () => { void restoreRoomAction(b.dataset.roomRestore); }));
     root.querySelectorAll("[data-room-catchup]").forEach((b) => b.addEventListener("click", () => { void catchUpAction(b.dataset.roomCatchup, b); }));
+    root.querySelectorAll("[data-room-hours]").forEach((b) => b.addEventListener("click", () => { void saveHoursAction(b.dataset.roomHours); }));
+  }
+
+  // 개장/마감 시간 저장 (rooms/{code}/market.openHour·closeHour)
+  async function saveHoursAction(code) {
+    if (!code) return;
+    const RB = window.RoomBridge;
+    if (!RB || !RB.setMarketHours || !RB.hasFirebase()) { toast("Firebase 미연결 또는 RoomBridge 미로드", "error"); return; }
+    const ohEl = document.querySelector(`[data-room-oh="${code}"]`);
+    const chEl = document.querySelector(`[data-room-ch="${code}"]`);
+    if (!ohEl || !chEl) return;
+    const oh = Number(ohEl.value), ch = Number(chEl.value);
+    if (!Number.isFinite(oh) || !Number.isFinite(ch) || oh < 0 || oh > 24 || ch < 0 || ch > 24) { toast("시간은 0~24 사이로 입력하세요", "error"); return; }
+    try {
+      await RB.setMarketHours(code, oh, ch);
+      toast(`[${code}] 개장시간 저장: ${oh}시 ~ ${ch}시`, "ok");
+      await renderRooms();
+    } catch (e) {
+      toast("저장 실패: " + ((e && e.message) || e), "error");
+    }
   }
 
   function roomRow(r) {
@@ -958,6 +999,12 @@
       <div class="room-card-meta">참여 ${r.players} · 종목 ${r.stocks} · 뉴스 ${r.news} · 공시 ${r.disclosures} · 캔들 ${r.historyCandles}</div>
       <div class="room-card-meta muted">host ${esc((r.hostId || "-").slice(0, 8))} · 생성 ${esc(fmtTime(r.createdAt))} · 수정 ${esc(fmtTime(r.updatedAt))}</div>
       <div class="room-card-meta muted">최근 tick ${esc(fmtTime(r.lastTickAt))} · 최근 보정 ${esc(fmtTime(r.lastCatchupAt))}</div>
+      <div class="room-card-meta room-hours">🕒 개장
+        <input type="number" min="0" max="24" value="${esc(r.openHour ?? 18)}" data-room-oh="${escAttr(r.code)}" style="width:46px;text-align:center" />시 ~
+        <input type="number" min="0" max="24" value="${esc(r.closeHour ?? 24)}" data-room-ch="${escAttr(r.code)}" style="width:46px;text-align:center" />시
+        <button class="button small" type="button" data-room-hours="${escAttr(r.code)}">시간 저장</button>
+        <span class="muted" style="font-size:11px">(자정=24, 동일값=24시간)</span>
+      </div>
       <div class="room-card-actions">
         <button class="button small" type="button" data-room-select="${escAttr(r.code)}">선택·로드</button>
         <a class="button small" href="${escAttr(battle)}" target="_blank" rel="noopener">주식시장</a>

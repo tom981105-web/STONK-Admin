@@ -375,7 +375,25 @@
       lastCatchupAt: market.lastCatchupAt || null,
       historyCandles,
       staleMin: lastTickAt ? Math.max(0, Math.round((Date.now() - lastTickAt) / 60000)) : null,
+      // 개장/마감 시간 (없으면 기본 18~24)
+      openHour: Number.isFinite(market.openHour) ? market.openHour : 18,
+      closeHour: Number.isFinite(market.closeHour) ? market.closeHour : 24,
     };
+  }
+
+  // ── 개장/마감 시간 저장 (admin → rooms/{code}/market.openHour·closeHour) ──
+  async function setMarketHours(code, openHour, closeHour) {
+    const database = db();
+    if (!database) throw new Error("Firebase 미연결");
+    const clampH = (v) => Math.max(0, Math.min(24, Math.round(Number(v))));
+    const oh = clampH(openHour), ch = clampH(closeHour);
+    if (!Number.isFinite(oh) || !Number.isFinite(ch)) throw new Error("시간 값을 확인하세요 (0~24)");
+    await database.ref().update({
+      [`rooms/${code}/market/openHour`]: oh,
+      [`rooms/${code}/market/closeHour`]: ch,
+      [`rooms/${code}/meta/updatedAt`]: Date.now(),
+    });
+    return { code, oh, ch };
   }
 
   // ── 시장 경과 보정 실행 (관리자 수동, 부분 update) ──
@@ -524,6 +542,21 @@
     return { code, restoredAt: now };
   }
 
+  // ── 패치 후 강제 새로고침 브로드캐스트 ──
+  // broadcast/reloadAt 에 현재 시각을 써서, 접속 중인 모든 battle 클라이언트가
+  // 시장 데이터를 유지한 채 페이지만 새로고침하게 한다. (시장 재시작과 무관)
+  async function forceReloadClients(adminId) {
+    const database = db();
+    if (!database) throw new Error("Firebase 미연결");
+    const now = Date.now();
+    await database.ref().update({
+      "broadcast/reloadAt": now,
+      "broadcast/reloadBy": adminId || "admin",
+    });
+    stat.lastWriteAt = now;
+    return { at: now };
+  }
+
   // ── 캐시 (선택적) ──
   function cache(code, room) {
     try { localStorage.setItem(STORAGE.cachePrefix + code, JSON.stringify({ at: Date.now(), room })); } catch (e) {}
@@ -548,11 +581,13 @@
     rejectJoinRequest,
     loadAllRooms,
     runCatchUp,
+    setMarketHours,
     softDeleteRoom,
     hardDeleteRoom,
     restoreRoom,
     resetMarket,
     purgeOtherRooms,
+    forceReloadClients,
     backup,
     listBackups,
     getBackup,

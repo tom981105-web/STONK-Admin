@@ -126,12 +126,13 @@
           <h1>전체 방 관리</h1>
         </div>
         <div class="head-actions">
+          <button id="forceReloadBtn" class="button" type="button" title="접속 중인 모든 battle 이용자의 화면을 새로고침해 새로 배포된 패치를 반영합니다 (시장·자산은 유지)">📡 접속자 새로고침</button>
           <button id="resetMarketBtn" class="button danger" type="button" title="단일 방(MAIN) 시장을 새로 시작합니다">🔄 시장 재시작</button>
           <button id="purgeRoomsBtn" class="button danger" type="button" title="MAIN 방만 남기고 나머지 방을 모두 완전 삭제합니다">🗑 MAIN 외 전체 삭제</button>
           <button id="refreshRooms" class="button ghost" type="button">새로고침</button>
         </div>
       </div>
-      <p class="room-notice" style="margin:0 0 12px">단일 방 운영: <b>시장 재시작</b>을 누르면 새 종목·뉴스로 시장이 다시 시작되고 모든 플레이어의 현금이 시작 자본으로 초기화됩니다(참가자 명단은 유지). <b id="resetMarketMsg"></b></p>
+      <p class="room-notice" style="margin:0 0 12px">단일 방 운영: <b>📡 접속자 새로고침</b>은 패치(코드 배포) 후 접속 중인 이용자 화면만 새로고침해 즉시 반영합니다(시장·자산 유지). <b>시장 재시작</b>을 누르면 새 종목·뉴스로 시장이 다시 시작되고 모든 플레이어의 현금이 시작 자본으로 초기화됩니다(참가자 명단은 유지). <b id="resetMarketMsg"></b></p>
       <div id="roomsStats" class="stat-grid"></div>
       <article class="card">
         <div class="card-title">
