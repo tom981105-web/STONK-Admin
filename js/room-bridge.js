@@ -549,9 +549,10 @@
     const database = db();
     if (!database) throw new Error("Firebase 미연결");
     const now = Date.now();
+    // 단일 방 운영: 루트 broadcast 는 보안 규칙상 쓰기 거부 → rooms/MAIN 아래(쓰기 허용)로 신호를 쓴다.
     await database.ref().update({
-      "broadcast/reloadAt": now,
-      "broadcast/reloadBy": adminId || "admin",
+      "rooms/MAIN/broadcast/reloadAt": now,
+      "rooms/MAIN/broadcast/reloadBy": adminId || "admin",
     });
     stat.lastWriteAt = now;
     return { at: now };
