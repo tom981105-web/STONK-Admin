@@ -1023,3 +1023,19 @@ textarea:focus {
     grid-template-columns: 1fr;
   }
 }
+
+/* v2.5: 은행 관리 패널 */
+.ba-search { display: flex; gap: 8px; margin-bottom: 14px; }
+.ba-search input { flex: 1; padding: 9px 12px; border-radius: 8px; border: 1px solid var(--line, #2a3242); background: var(--panel2, #1c2230); color: var(--txt, #e6e9ef); }
+.ba-card { background: var(--panel, #151a23); border: 1px solid var(--line, #2a3242); border-radius: 12px; padding: 14px 16px; margin-bottom: 12px; }
+.ba-card h3 { margin: 0 0 10px; font-size: 15px; }
+.ba-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.ba-row { display: flex; justify-content: space-between; gap: 10px; padding: 8px 10px; background: rgba(255,255,255,.03); border-radius: 8px; font-size: 13px; }
+.ba-row span { color: var(--dim, #8b97a8); }
+.ba-row b { font-variant-numeric: tabular-nums; }
+.ba-actions { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.ba-actions input, .ba-actions select { padding: 8px 10px; border-radius: 8px; border: 1px solid var(--line, #2a3242); background: var(--panel2, #1c2230); color: var(--txt, #e6e9ef); min-width: 120px; }
+.ba-list { display: flex; flex-direction: column; gap: 6px; margin-top: 8px; }
+.ba-li { display: flex; justify-content: space-between; align-items: center; gap: 10px; padding: 8px 10px; background: rgba(255,255,255,.03); border-radius: 8px; font-size: 13px; }
+.button.mini { padding: 5px 10px; font-size: 12px; }
+@media (max-width: 680px) { .ba-grid { grid-template-columns: 1fr; } }
