@@ -6,7 +6,7 @@
 (function () {
   "use strict";
 
-  const START_CASH = 10_000_000; // 시작 자본 (battle game.js 와 동일)
+  const START_CASH = 5_000_000; // 시작 자본 500만원 (battle game.js 와 동일)
   const MIN_PRICE = 10;
 
   function randInt(min, max) { return Math.floor(Math.random() * (max - min + 1)) + min; }
