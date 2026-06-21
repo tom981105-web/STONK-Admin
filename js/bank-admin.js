@@ -77,16 +77,17 @@
     const uid = await resolveUid(q);
     if (!uid) { notify("해당 UID/닉네임을 찾을 수 없습니다.", false); current = null; renderBody(); return; }
     const d = db();
-    const [bSnap, pSnap, tSnap, mSnap] = await Promise.all([
+    const [bSnap, pSnap, tSnap, mSnap, coSnap] = await Promise.all([
       d.ref(`rooms/${ROOM}/bank/${uid}`).once("value"),
       d.ref(`rooms/${ROOM}/players/${uid}`).once("value"),
       d.ref(`rooms/${ROOM}/bank/${uid}/tx`).orderByKey().limitToLast(15).once("value"),
       d.ref(`rooms/${ROOM}/bank/${uid}/messages`).orderByKey().limitToLast(15).once("value"),
+      d.ref(`rooms/${ROOM}/companies/${uid}`).once("value"),
     ]);
     const bank = bSnap.val() || {};
     const pv = pSnap.val() || {};
     const toArr = (s) => s.exists() ? Object.entries(s.val()).map(([id, x]) => Object.assign({ id }, x)).sort((a, b) => num(b.createdAt) - num(a.createdAt)) : [];
-    current = { uid, bank, cash: num(pv.cash), nickname: pv.nickname || bank.nickname || "플레이어", tx: toArr(tSnap), msgs: toArr(mSnap) };
+    current = { uid, bank, cash: num(pv.cash), nickname: pv.nickname || bank.nickname || "플레이어", tx: toArr(tSnap), msgs: toArr(mSnap), company: coSnap.val() };
     notify("조회 완료: " + current.nickname);
     renderBody();
   }
@@ -162,11 +163,38 @@
         </div>
       </div>
 
+      ${companyAdminCard()}
+
       <div class="ba-card">
         <h3>최근 거래내역</h3>
         <div class="ba-list">${current.tx.length ? current.tx.map((t) => `<div class="ba-li"><span>${esc(t.title || t.type)} <small class="muted">${fmtTime(t.createdAt)}</small></span><b>${num(t.amount) >= 0 ? "+" : "−"}${won(Math.abs(num(t.amount)))}</b></div>`).join("") : '<span class="muted">없음</span>'}</div>
       </div>`;
     body.querySelectorAll("[data-ba]").forEach((el) => el.addEventListener("click", () => onAction(el.dataset.ba, el.dataset.id)));
+  }
+
+  const CO_STAGE = { STARTUP: "스타트업", SMALL_BIZ: "소기업", SCALE_UP: "성장기업", ENTERPRISE: "대기업", PRE_IPO: "상장 준비", LISTED: "상장기업" };
+  function companyAdminCard() {
+    const co = current.company;
+    if (!co) return `<div class="ba-card"><h3>Company</h3><span class="muted">설립한 회사가 없습니다.</span></div>`;
+    return `<div class="ba-card">
+      <h3>Company · ${esc(co.name)} <small class="muted">${esc(CO_STAGE[co.stage] || co.stage)}</small></h3>
+      <div class="ba-grid">
+        ${row("회사 가치", won(co.companyValue))}${row("회사 자금", won(co.companyCash))}
+        ${row("브랜드 / 리스크", clamp(co.brandScore) + " / " + clamp(co.riskScore))}${row("IPO 준비도", clamp(co.ipoReadiness) + "%")}
+      </div>
+      <div class="ba-actions" style="margin-top:8px">
+        <input id="coVal" type="number" placeholder="회사가치 절대값" /><button class="button" data-ba="co_value">가치 설정</button>
+        <input id="coCash" type="number" placeholder="회사자금 절대값" /><button class="button" data-ba="co_cash">자금 설정</button>
+        <input id="coBrand" type="number" placeholder="브랜드 ±" /><button class="button" data-ba="co_brand">브랜드</button>
+        <input id="coRisk" type="number" placeholder="리스크 ±" /><button class="button" data-ba="co_risk">리스크</button>
+        <input id="coIpo" type="number" placeholder="IPO ±" /><button class="button" data-ba="co_ipo">IPO</button>
+      </div>
+      <div class="ba-actions" style="margin-top:6px">
+        <input id="coNewsTitle" type="text" placeholder="뉴스 제목" /><input id="coNewsBody" type="text" placeholder="뉴스 내용" />
+        <button class="button" data-ba="co_news">Company 뉴스 생성</button>
+        <button class="button ghost" data-ba="co_reset">회사 초기화(삭제)</button>
+      </div>
+    </div>`;
   }
 
   async function onAction(act, id) {
@@ -234,6 +262,27 @@
         const u = {}; Object.keys(ms).forEach((k) => { if (!ms[k].read) u[`${k}/read`] = true; });
         if (Object.keys(u).length) await d.ref(`rooms/${ROOM}/bank/${uid}/messages`).update(u);
         await adminLog(uid, "mark_all_read", "", "", "");
+      } else if (act.startsWith("co_")) {
+        const co = current.company; const coRef = d.ref(`rooms/${ROOM}/companies/${uid}`);
+        if (act !== "co_news" && act !== "co_reset" && !co) return notify("회사가 없습니다.", false);
+        const cn = (v) => Math.max(0, Math.trunc(num(v)));
+        if (act === "co_value") { const v = cn($("#coVal").value); await coRef.update({ companyValue: v, updatedAt: Date.now() }); await adminLog(uid, "company_adjust", co.companyValue, v, "회사가치"); }
+        else if (act === "co_cash") { const v = cn($("#coCash").value); await coRef.update({ companyCash: v, updatedAt: Date.now() }); await adminLog(uid, "company_adjust", co.companyCash, v, "회사자금"); }
+        else if (act === "co_brand") { const v = clamp(num(co.brandScore) + num($("#coBrand").value)); await coRef.update({ brandScore: v, updatedAt: Date.now() }); await adminLog(uid, "company_adjust", clamp(co.brandScore), v, "브랜드"); }
+        else if (act === "co_risk") { const v = clamp(num(co.riskScore) + num($("#coRisk").value)); await coRef.update({ riskScore: v, updatedAt: Date.now() }); await adminLog(uid, "company_adjust", clamp(co.riskScore), v, "리스크"); }
+        else if (act === "co_ipo") { const v = clamp(num(co.ipoReadiness) + num($("#coIpo").value)); await coRef.update({ ipoReadiness: v, updatedAt: Date.now() }); await adminLog(uid, "company_adjust", clamp(co.ipoReadiness), v, "IPO"); }
+        else if (act === "co_news") {
+          const title = ($("#coNewsTitle").value || "").trim(), body = ($("#coNewsBody").value || "").trim();
+          if (!title && !body) return notify("뉴스 제목/내용을 입력하세요.", false);
+          await d.ref(`rooms/${ROOM}/companyNews`).push({ uid, companyName: co ? co.name : "", type: "admin", title: title || "공지", body, impact: "neutral", createdAt: Date.now() });
+          await adminLog(uid, "company_news", "", title, body);
+        } else if (act === "co_reset") {
+          if (!confirm("이 유저의 회사를 완전히 삭제(초기화)합니다. 되돌릴 수 없습니다. 진행할까요?")) return;
+          if (!confirm("정말 삭제할까요? 회사 데이터가 사라집니다.")) return;
+          await coRef.remove();
+          await d.ref(`rooms/${ROOM}/companyMarket/${uid}`).remove();
+          await adminLog(uid, "company_reset", co ? co.name : "", "deleted", "회사 초기화");
+        }
       }
       notify("적용 완료. 새로고침합니다.");
       await search(uid);
@@ -269,6 +318,11 @@
             <button class="button" data-evt="setcustom">커스텀 이벤트 설정</button>
           </div>
           <p class="muted" style="font-size:11px">범위를 벗어나면 자동 클램프됩니다. 빈 값은 기본값(배율 1.0 / 보정 0). 모든 효과는 게임머니 기준.</p>
+          <div class="ba-actions" style="margin-top:8px">
+            <input id="presetName" type="text" placeholder="프리셋 이름" />
+            <button class="button" data-evt="savepreset">현재 커스텀값을 프리셋 저장</button>
+          </div>
+          <div id="presetList" class="ba-list"></div>
         </details>
       </div>
       <div class="ba-search">
@@ -281,6 +335,48 @@
     $("#bankAdminQuery").addEventListener("keydown", (e) => { if (e.key === "Enter") search($("#bankAdminQuery").value); });
     panel.querySelectorAll("[data-evt]").forEach((el) => el.addEventListener("click", () => onEvent(el.dataset.evt)));
     refreshEvent();
+    refreshPresets();
+  }
+
+  function readCustomEffects() {
+    const cl = (id, lo, hi, d) => { const el = $("#" + id); const v = Number(el && el.value); return (el && el.value !== "" && Number.isFinite(v)) ? Math.max(lo, Math.min(hi, v)) : d; };
+    return { depositRateMultiplier: cl("ceDep", 0.5, 1.5, 1), loanRateMultiplier: cl("ceLoan", 0.5, 1.5, 1), insuranceExtraDiscount: cl("ceIns", 0, 0.10, 0), investMinDelta: cl("ceIMin", -0.10, 0.10, 0), investMaxDelta: cl("ceIMax", -0.10, 0.10, 0), vipScoreMultiplier: cl("ceVip", 1.0, 2.0, 1), vipVaultBonusRate: cl("ceVault", 0, 0.001, 0), cardPayVipBonus: Math.round(cl("ceCard", 0, 5, 0)) };
+  }
+  async function refreshPresets() {
+    try {
+      const snap = await db().ref(`rooms/${ROOM}/bankEventPresets`).orderByKey().limitToLast(20).once("value");
+      const el = $("#presetList"); if (!el) return;
+      const arr = Object.entries(snap.val() || {}).map(([id, p]) => Object.assign({ id }, p)).sort((a, b) => num(b.createdAt) - num(a.createdAt));
+      el.innerHTML = arr.length ? arr.map((p) => `<div class="ba-li"><span><b>${esc(p.title)}</b> <small class="muted">${esc(p.type || "custom")}</small></span><span><button class="button mini" data-pl="${esc(p.id)}">불러오기</button> <button class="button mini" data-pa="${esc(p.id)}">적용</button> <button class="button ghost mini" data-pd="${esc(p.id)}">삭제</button></span></div>`).join("") : '<span class="muted">저장된 프리셋 없음</span>';
+      el.querySelectorAll("[data-pl]").forEach((b) => b.addEventListener("click", () => presetAction("load", b.dataset.pl)));
+      el.querySelectorAll("[data-pa]").forEach((b) => b.addEventListener("click", () => presetAction("apply", b.dataset.pa)));
+      el.querySelectorAll("[data-pd]").forEach((b) => b.addEventListener("click", () => presetAction("del", b.dataset.pd)));
+    } catch (_) {}
+  }
+  async function presetAction(action, id) {
+    try {
+      const p = (await db().ref(`rooms/${ROOM}/bankEventPresets/${id}`).once("value")).val();
+      if (!p) return;
+      if (action === "load") {
+        const e = p.effects || {}, set = (i, v) => { const el = $("#" + i); if (el) el.value = (v === undefined || v === null) ? "" : v; };
+        if ($("#ceTitle")) $("#ceTitle").value = p.title || "";
+        set("ceDep", e.depositRateMultiplier); set("ceLoan", e.loanRateMultiplier); set("ceIns", e.insuranceExtraDiscount);
+        set("ceIMin", e.investMinDelta); set("ceIMax", e.investMaxDelta); set("ceVip", e.vipScoreMultiplier);
+        set("ceVault", e.vipVaultBonusRate); set("ceCard", e.cardPayVipBonus);
+        notify("프리셋 불러옴: " + p.title);
+      } else if (action === "apply") {
+        if (!confirm(`프리셋 '${p.title}'을(를) 24시간 적용할까요?`)) return;
+        const now = Date.now();
+        await db().ref(`rooms/${ROOM}/bankEvents/current`).set({ eventId: "custom", type: "custom", title: p.title, description: "프리셋 적용", desc: "프리셋 적용", manual: true, custom: true, effects: p.effects || {}, startedAt: now, expiresAt: now + 86400000, adminUid: adminUid(), createdAt: now });
+        await adminLog("", "admin_event_set", "", "preset_apply:" + p.title, "");
+        notify("프리셋 적용: " + p.title); refreshEvent();
+      } else if (action === "del") {
+        if (!confirm("이 프리셋을 삭제할까요?")) return;
+        await db().ref(`rooms/${ROOM}/bankEventPresets/${id}`).remove();
+        await adminLog("", "admin_event_set", id, "preset_del", "");
+        notify("프리셋 삭제됨"); refreshPresets();
+      }
+    } catch (e) { notify("실패: " + ((e && e.message) || e), false); }
   }
 
   async function refreshEvent() {
@@ -320,6 +416,13 @@
         await db().ref(`rooms/${ROOM}/bankEvents/current`).set({ eventId: "custom", type: "custom", title, description: "관리자 커스텀 이벤트", desc: "관리자 커스텀 이벤트", manual: true, custom: true, effects, startedAt: now, expiresAt: now + durH * 3600000, adminUid: adminUid(), createdAt: now });
         await adminLog("", "admin_event_set", before ? (before.title || before.type || "") : "", "custom:" + title, JSON.stringify(effects).slice(0, 120));
         notify("커스텀 이벤트 설정 완료: " + title);
+      } else if (act === "savepreset") {
+        const name = ($("#presetName").value || "").trim();
+        if (!name) return notify("프리셋 이름을 입력하세요.", false);
+        const now = Date.now();
+        await db().ref(`rooms/${ROOM}/bankEventPresets`).push({ title: name, type: "custom", description: "관리자 프리셋", effects: readCustomEffects(), createdBy: adminUid(), createdAt: now, updatedAt: now });
+        await adminLog("", "admin_event_set", "", "preset_save:" + name, "");
+        notify("프리셋 저장: " + name); refreshPresets(); return;
       } else if (act === "clear") {
         if (!confirm("수동 이벤트를 종료하고 기본 랜덤으로 복귀할까요?")) return;
         await db().ref(`rooms/${ROOM}/bankEvents/current`).remove();
