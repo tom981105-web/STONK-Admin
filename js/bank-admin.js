@@ -20,6 +20,25 @@
     loan: { title: "대출 유예권", premium: 2000000, ms: 86400000 },
   };
 
+  // bank.js investOutcome 과 동일한 seed 공식(강제정산이 같은 결과를 내도록)
+  function hashSeed(str) { let h = 2166136261 >>> 0; for (let i = 0; i < str.length; i++) { h ^= str.charCodeAt(i); h = Math.imul(h, 16777619); } return h >>> 0; }
+  function seededUnit(seed) { let x = (hashSeed(String(seed)) || 1) >>> 0; x ^= x << 13; x >>>= 0; x ^= x >> 17; x ^= x << 5; x >>>= 0; return (x % 100000) / 100000; }
+  function investOutcome(v) {
+    const u = (seededUnit(v.seed) + seededUnit(v.seed + "x")) / 2;
+    const min = num(v.expectedMinRate), max = num(v.expectedMaxRate), skew = 0.45;
+    let rate = min + (max - min) * (u * (1 - skew) + skew * 0.5 + (u - 0.5) * skew);
+    rate = Math.max(min, Math.min(max, rate));
+    const principal = Math.trunc(num(v.principal));
+    const amount = Math.max(0, Math.round(principal * (1 + rate)));
+    return { rate, amount, profit: amount - principal };
+  }
+  const EVENTS = [
+    { type: "lowrate", title: "저금리 데이" }, { type: "highrate", title: "고금리 데이" },
+    { type: "boom", title: "투자 호황" }, { type: "bust", title: "투자 침체" },
+    { type: "insurance", title: "보험 우대 기간" }, { type: "cashback", title: "카드 캐시백 이벤트" },
+    { type: "vipweek", title: "VIP 우대 기간" }, { type: "caution", title: "금융 경계주의보" },
+  ];
+
   function db() { return window.firebase && window.firebase.database ? window.firebase.database() : null; }
   function adminUid() { try { return (window.firebase.auth().currentUser || {}).uid || "admin"; } catch (_) { return "admin"; } }
   function fmtTime(t) { const d = new Date(num(t) || Date.now()); const p = (n) => (n < 10 ? "0" : "") + n; return `${d.getMonth() + 1}/${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`; }
@@ -120,8 +139,17 @@
 
       <div class="ba-card">
         <h3>투자상품</h3>
-        <div class="ba-list">${invs.length ? invs.map((v) => `<div class="ba-li"><span>${esc(v.title)} · 원금 ${won(v.principal)} · <b>${esc(v.status)}</b></span><button class="button ghost mini" data-ba="cancelinv" data-id="${esc(v.id)}">취소(원금환급)</button></div>`).join("") : '<span class="muted">투자 없음</span>'}</div>
-        <p class="muted" style="font-size:12px">강제 정산(수익 확정 지급)은 다음 패치로 분리. 현재는 취소(원금 환급)만 제공합니다.</p>
+        <div class="ba-list">${invs.length ? invs.map((v) => {
+          const settleable = v.status !== "settled" && v.status !== "cancelled";
+          const o = settleable ? investOutcome(v) : null;
+          return `<div class="ba-li"><span>${esc(v.title)} · 원금 ${won(v.principal)} · <b>${esc(v.status)}</b>${o ? ` · 예상 ${(o.rate * 100).toFixed(1)}%` : ""}</span><span>${settleable ? `<button class="button mini" data-ba="settleinv" data-id="${esc(v.id)}">강제정산</button> <button class="button ghost mini" data-ba="cancelinv" data-id="${esc(v.id)}">취소</button>` : ""}</span></div>`;
+        }).join("") : '<span class="muted">투자 없음</span>'}</div>
+        <p class="muted" style="font-size:12px">강제정산은 기존 seed 결과(새로고침 불변)를 그대로 사용합니다.</p>
+      </div>
+
+      <div class="ba-card">
+        <h3>알림 / 우편함 관리</h3>
+        <div class="ba-list">${(current.msgs || []).length ? current.msgs.slice(0, 12).map((m) => `<div class="ba-li"><span>${m.read ? "" : "🔵 "}<b>${esc(m.title)}</b> <small class="muted">${esc(m.body || "")}</small></span><button class="button ghost mini" data-ba="delmsg" data-id="${esc(m.id)}">삭제</button></div>`).join("") : '<span class="muted">알림 없음</span>'}</div>
       </div>
 
       <div class="ba-card">
@@ -174,6 +202,20 @@
       } else if (act === "expireins") {
         await d.ref(`rooms/${ROOM}/bank/${uid}/insurances/${id}/status`).set("expired");
         await adminLog(uid, "expire_insurance", "", "expired", id);
+      } else if (act === "settleinv") {
+        const inv = (b.investments || {})[id]; if (!inv) return;
+        if (inv.status === "settled" || inv.status === "cancelled") return notify("이미 정산/취소된 상품입니다.", false);
+        if (!confirm(`${inv.title}을(를) 강제정산할까요? (seed 결과 그대로)`)) return;
+        const out = investOutcome(inv);
+        await d.ref(`rooms/${ROOM}/players/${uid}/cash`).transaction((c) => Math.trunc(num(c)) + out.amount);
+        await d.ref(`rooms/${ROOM}/bank/${uid}/investments/${id}`).remove();
+        await bankTx(uid, { type: "investment_settle", title: "관리자 투자 강제정산", amount: out.amount, memo: `관리자 정산 ${(out.rate * 100).toFixed(1)}%` });
+        await bankMsg(uid, { type: "admin", title: "투자상품 관리자 정산", body: `투자상품이 관리자에 의해 정산되었습니다. (${(out.rate * 100).toFixed(1)}%, ${won(out.amount)})` });
+        await adminLog(uid, "admin_investment_settle", id, won(out.amount), `${(out.rate * 100).toFixed(1)}%`);
+      } else if (act === "delmsg") {
+        if (!confirm("이 알림을 삭제할까요?")) return;
+        await d.ref(`rooms/${ROOM}/bank/${uid}/messages/${id}`).remove();
+        await adminLog(uid, "admin_message_delete", "", id, "");
       } else if (act === "cancelinv") {
         const inv = (b.investments || {})[id]; if (!inv) return;
         const principal = Math.trunc(num(inv.principal));
@@ -204,6 +246,14 @@
     panel.innerHTML = `
       <div class="panel-head"><div><p class="eyebrow">Bank</p><h1>은행 관리</h1></div></div>
       <p class="room-notice" style="margin:0 0 12px">유저의 Bank 상태를 조회하고 신용·VIP·보험·투자·알림을 조정합니다. 모든 조정은 관리자 로그에 기록됩니다. (단일 방 MAIN) <b id="bankAdminMsg"></b></p>
+      <div class="ba-card">
+        <h3>금융 이벤트 (게임머니) <span id="evtCurrent" class="muted" style="font-size:12px"></span></h3>
+        <div class="ba-actions">
+          <select id="evtSelect">${EVENTS.map((e) => `<option value="${e.type}">${esc(e.title)}</option>`).join("")}</select>
+          <button class="button" data-evt="set">이벤트 수동 설정(24h)</button>
+          <button class="button ghost" data-evt="clear">종료(기본 랜덤 복귀)</button>
+        </div>
+      </div>
       <div class="ba-search">
         <input id="bankAdminQuery" type="text" placeholder="UID 또는 닉네임" />
         <button id="bankAdminSearch" class="button" type="button">조회</button>
@@ -212,6 +262,35 @@
     msgEl = $("#bankAdminMsg");
     $("#bankAdminSearch").addEventListener("click", () => search($("#bankAdminQuery").value));
     $("#bankAdminQuery").addEventListener("keydown", (e) => { if (e.key === "Enter") search($("#bankAdminQuery").value); });
+    panel.querySelectorAll("[data-evt]").forEach((el) => el.addEventListener("click", () => onEvent(el.dataset.evt)));
+    refreshEvent();
+  }
+
+  async function refreshEvent() {
+    try {
+      const cur = (await db().ref(`rooms/${ROOM}/bankEvents/current`).once("value")).val();
+      const el = $("#evtCurrent"); if (!el) return;
+      if (cur && cur.manual && (!cur.expiresAt || num(cur.expiresAt) > Date.now())) el.textContent = `현재: ${cur.title || cur.type} (수동)`;
+      else el.textContent = "현재: 날짜 기반 자동 이벤트";
+    } catch (_) {}
+  }
+  async function onEvent(act) {
+    try {
+      if (act === "set") {
+        const type = $("#evtSelect").value; const e = EVENTS.find((x) => x.type === type);
+        if (!confirm(`금융 이벤트를 '${e.title}'(으)로 24시간 설정할까요?`)) return;
+        const now = Date.now();
+        await db().ref(`rooms/${ROOM}/bankEvents/current`).set({ eventId: type, type, title: e.title, description: "", manual: true, adminUid: adminUid(), startedAt: now, expiresAt: now + 86400000, createdAt: now });
+        await adminLog("", "admin_event_set", "", type, e.title);
+        notify("이벤트 설정 완료: " + e.title);
+      } else if (act === "clear") {
+        if (!confirm("수동 이벤트를 종료하고 기본 랜덤으로 복귀할까요?")) return;
+        await db().ref(`rooms/${ROOM}/bankEvents/current`).remove();
+        await adminLog("", "admin_event_set", "", "cleared", "기본 랜덤 복귀");
+        notify("이벤트 종료 완료");
+      }
+      refreshEvent();
+    } catch (e) { notify("실패: " + ((e && e.message) || e), false); }
   }
 
   if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", init);
