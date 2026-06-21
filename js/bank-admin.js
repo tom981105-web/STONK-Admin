@@ -253,6 +253,23 @@
           <button class="button" data-evt="set">이벤트 수동 설정(24h)</button>
           <button class="button ghost" data-evt="clear">종료(기본 랜덤 복귀)</button>
         </div>
+        <details class="ba-custom" style="margin-top:10px">
+          <summary style="cursor:pointer;font-weight:700;font-size:13px">직접 수치 입력(고급)</summary>
+          <div class="ba-actions" style="margin-top:8px">
+            <input id="ceTitle" type="text" placeholder="이벤트 제목" />
+            <input id="ceDep" type="number" step="0.1" placeholder="예금배율 0.5~1.5" />
+            <input id="ceLoan" type="number" step="0.1" placeholder="대출배율 0.5~1.5" />
+            <input id="ceIns" type="number" step="0.01" placeholder="보험추가할인 0~0.10" />
+            <input id="ceIMin" type="number" step="0.01" placeholder="투자min보정 -0.10~0.10" />
+            <input id="ceIMax" type="number" step="0.01" placeholder="투자max보정 -0.10~0.10" />
+            <input id="ceVip" type="number" step="0.1" placeholder="VIP점수배율 1.0~2.0" />
+            <input id="ceVault" type="number" step="0.0001" placeholder="VIP금고추가 0~0.001" />
+            <input id="ceCard" type="number" step="1" placeholder="카드납부VIP 0~5" />
+            <input id="ceDur" type="number" step="1" placeholder="지속 1~72h" />
+            <button class="button" data-evt="setcustom">커스텀 이벤트 설정</button>
+          </div>
+          <p class="muted" style="font-size:11px">범위를 벗어나면 자동 클램프됩니다. 빈 값은 기본값(배율 1.0 / 보정 0). 모든 효과는 게임머니 기준.</p>
+        </details>
       </div>
       <div class="ba-search">
         <input id="bankAdminQuery" type="text" placeholder="UID 또는 닉네임" />
@@ -283,6 +300,26 @@
         await db().ref(`rooms/${ROOM}/bankEvents/current`).set({ eventId: type, type, title: e.title, description: "", manual: true, adminUid: adminUid(), startedAt: now, expiresAt: now + 86400000, createdAt: now });
         await adminLog("", "admin_event_set", "", type, e.title);
         notify("이벤트 설정 완료: " + e.title);
+      } else if (act === "setcustom") {
+        const cl = (id, lo, hi, d) => { const v = Number($("#" + id).value); return Number.isFinite(v) && $("#" + id).value !== "" ? Math.max(lo, Math.min(hi, v)) : d; };
+        const effects = {
+          depositRateMultiplier: cl("ceDep", 0.5, 1.5, 1),
+          loanRateMultiplier: cl("ceLoan", 0.5, 1.5, 1),
+          insuranceExtraDiscount: cl("ceIns", 0, 0.10, 0),
+          investMinDelta: cl("ceIMin", -0.10, 0.10, 0),
+          investMaxDelta: cl("ceIMax", -0.10, 0.10, 0),
+          vipScoreMultiplier: cl("ceVip", 1.0, 2.0, 1),
+          vipVaultBonusRate: cl("ceVault", 0, 0.001, 0),
+          cardPayVipBonus: Math.round(cl("ceCard", 0, 5, 0)),
+        };
+        const durH = Math.round(cl("ceDur", 1, 72, 24));
+        const title = ($("#ceTitle").value || "").trim() || "관리자 커스텀 이벤트";
+        if (!confirm(`커스텀 금융 이벤트 '${title}'을(를) ${durH}시간 설정할까요?`)) return;
+        const now = Date.now();
+        const before = (await db().ref(`rooms/${ROOM}/bankEvents/current`).once("value")).val();
+        await db().ref(`rooms/${ROOM}/bankEvents/current`).set({ eventId: "custom", type: "custom", title, description: "관리자 커스텀 이벤트", desc: "관리자 커스텀 이벤트", manual: true, custom: true, effects, startedAt: now, expiresAt: now + durH * 3600000, adminUid: adminUid(), createdAt: now });
+        await adminLog("", "admin_event_set", before ? (before.title || before.type || "") : "", "custom:" + title, JSON.stringify(effects).slice(0, 120));
+        notify("커스텀 이벤트 설정 완료: " + title);
       } else if (act === "clear") {
         if (!confirm("수동 이벤트를 종료하고 기본 랜덤으로 복귀할까요?")) return;
         await db().ref(`rooms/${ROOM}/bankEvents/current`).remove();
